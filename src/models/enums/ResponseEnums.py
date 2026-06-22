@@ -19,4 +19,19 @@ class ResponseSignal(Enum):
     VECTORDB_SEARCH_SUCCESS = "vectordb_search_success"
     RAG_ANSWER_ERROR = "rag_answer_error"
     RAG_ANSWER_SUCCESS = "rag_answer_success"
-    
+
+    # Secretary AI signals
+    QUERY_SAVED = "query_saved"
+    QUERY_CLASSIFIED = "query_classified"
+    GMAIL_SEARCH_SUCCESS = "gmail_search_success"
+    GMAIL_SEARCH_ERROR = "gmail_search_error"
+    GMAIL_SEND_SUCCESS = "gmail_send_success"
+    GMAIL_SEND_ERROR = "gmail_send_error"
+    EMAIL_SUMMARIZED = "email_summarized"
+    CALENDAR_EVENT_CREATED = "calendar_event_created"
+    CALENDAR_EVENT_ERROR = "calendar_event_error"
+    REMINDER_CREATED = "reminder_created"
+    REMINDER_ERROR = "reminder_error"
+    AGENT_RESPONSE_SUCCESS = "agent_response_success"
+    AGENT_RESPONSE_ERROR = "agent_response_error"
+    NO_INFORMATION_FOUND = "no_information_found"

@@ -110,7 +110,7 @@ class NLPController(BaseController):
 
         return results
     
-    def answer_rag_question(self, project: Project, query: str, limit: int = 10):
+    def answer_rag_question(self, project: Project, query: str, limit: int = 10, conversation_history: list = None):
         
         answer, full_prompt, chat_history = None, None, None
 
@@ -127,7 +127,7 @@ class NLPController(BaseController):
         # step2: Construct LLM prompt
         system_prompt = self.template_parser.get("rag", "system_prompt")
 
-        documents_prompts = "\n".join([
+        documents_prompts = "\\n\\n---\\n\\n".join([
             self.template_parser.get("rag", "document_prompt", {
                     "doc_num": idx + 1,
                     "chunk_text": doc.text,
@@ -135,7 +135,13 @@ class NLPController(BaseController):
             for idx, doc in enumerate(retrieved_documents)
         ])
 
-        footer_prompt = self.template_parser.get("rag", "footer_prompt")
+        print(f"Retrieved Chunks:\\n{documents_prompts}")
+        logger.info(f"Retrieved Chunks:\\n{documents_prompts}")
+
+        footer_prompt = self.template_parser.get("rag", "footer_prompt", {
+            "context": documents_prompts,
+            "query": query
+        })
 
         # step3: Construct Generation Client Prompts
         chat_history = [
@@ -144,8 +150,15 @@ class NLPController(BaseController):
                 role=self.generation_client.enums.SYSTEM.value,
             )
         ]
+        
+        if conversation_history:
+            for turn in conversation_history[:-1]:
+                role = self.generation_client.enums.USER.value if turn["role"] == "user" else self.generation_client.enums.ASSISTANT.value
+                chat_history.append(self.generation_client.construct_prompt(prompt=turn["content"], role=role))
 
-        full_prompt = "\n\n".join([ documents_prompts,  footer_prompt])
+        full_prompt = footer_prompt
+
+        print(f"\\n========== FINAL LLM PROMPT ==========\\n{full_prompt}\\n======================================\\n")
 
         # step4: Retrieve the Answer
         answer = self.generation_client.generate_text(

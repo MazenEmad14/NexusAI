@@ -1,0 +1,2784 @@
+شرح مشروع Mini RAG App
+======================
+
+الملف ده معمول كشرح تفصيلي للمشروع فايل فايل وفولدر فولدر.
+الفكرة العامة إن المشروع عبارة عن Backend باستخدام FastAPI لتطبيق RAG بسيط.
+
+RAG اختصار لـ Retrieval-Augmented Generation.
+يعني بدل ما نسأل الموديل سؤال وخلاص، بنعمل الخطوات دي:
+
+1. نرفع ملفات فيها المعرفة أو الداتا.
+2. نقسم الملفات إلى أجزاء صغيرة اسمها chunks.
+3. نحول كل chunk إلى embedding vector.
+4. نخزن الـ vectors في Vector Database.
+5. لما المستخدم يسأل سؤال، نحول السؤال إلى vector.
+6. نبحث عن أقرب chunks للسؤال.
+7. نبني prompt من الـ chunks القريبة.
+8. نبعت الـ prompt للموديل عشان يولد إجابة مبنية على الداتا.
+
+
+============================================================
+1. نظرة عامة على هيكل المشروع
+============================================================
+
+المشروع متقسم كده:
+
+mini-RAG-APP/
+|-- src/
+|   |-- assets/
+|   |-- controllers/
+|   |-- helpers/
+|   |-- models/
+|   |-- routes/
+|   |-- stores/
+|   |-- main.py
+|   |-- requirements.txt
+|   |-- start.sh
+|   |-- .env.example
+|-- docker/
+|-- README.md
+|-- LICENSE
+|-- me_EX.txt
+
+كل جزء له مسؤولية:
+
+src/
+هو كود التطبيق الأساسي.
+
+controllers/
+فيه منطق التطبيق العملي: رفع ملفات، تجهيز مسارات، تقطيع ملفات، التعامل مع NLP و RAG.
+
+routes/
+فيه endpoints الخاصة بـ FastAPI. يعني API URLs التي المستخدم أو Postman يتعامل معها.
+
+models/
+فيه كود التعامل مع MongoDB، وفيه Pydantic schemas التي تمثل شكل البيانات.
+
+stores/
+فيه طبقة التعامل مع الخدمات الخارجية أو التخزين المتخصص:
+- stores/llm: التعامل مع OpenAI / Cohere / Groq.
+- stores/vectordb: التعامل مع Qdrant.
+
+helpers/
+فيه إعدادات المشروع وقراءة ملف البيئة .env.
+
+assets/
+فيه الملفات المرفوعة وقاعدة بيانات Qdrant المحلية.
+
+docker/
+فيه docker-compose لتشغيل MongoDB.
+
+
+============================================================
+2. ملف src/main.py
+============================================================
+
+ده أهم ملف في تشغيل التطبيق.
+هو نقطة الدخول لتطبيق FastAPI.
+
+المحتوى الأساسي:
+
+from fastapi import FastAPI
+app = FastAPI()
+
+ده بينشئ تطبيق FastAPI.
+
+السطر ده:
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+بيضيف فولدر src إلى Python path.
+الغرض منه إن imports زي:
+
+from routes import base, data, nlp
+
+تشتغل حتى لو شغلت التطبيق من root folder.
+
+main.py بيستورد:
+
+- routes/base.py
+- routes/data.py
+- routes/nlp.py
+- MongoDB AsyncIOMotorClient
+- get_settings
+- LLMProviderFactory
+- VectorDBProviderFactory
+- TemplateParser
+
+
+startup_db_client
+-----------------
+
+الدالة دي بتشتغل عند بداية تشغيل السيرفر:
+
+@app.on_event("startup")
+async def startup_db_client():
+
+وظيفتها:
+
+1. قراءة الإعدادات:
+   settings = get_settings()
+
+2. فتح اتصال MongoDB:
+   app.mongo_conn = AsyncIOMotorClient(settings.MONGODB_URL)
+   app.db_client = app.mongo_conn[settings.MONGODB_DATABASE]
+
+   app.mongo_conn هو الاتصال الرئيسي.
+   app.db_client هو قاعدة البيانات المحددة.
+
+3. إنشاء factory للـ LLM:
+   llm_provider_factory = LLMProviderFactory(settings)
+
+4. إنشاء factory للـ Vector DB:
+   vectordb_provider_factory = VectorDBProviderFactory(settings)
+
+5. إنشاء generation client:
+   app.generation_client = llm_provider_factory.create(provider=settings.GENERATION_BACKEND)
+
+   ده العميل المستخدم لتوليد النصوص، مثل OpenAI أو Cohere أو Groq.
+
+6. تحديد موديل التوليد:
+   app.generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
+
+7. إنشاء embedding client:
+   app.embedding_client = llm_provider_factory.create(provider=settings.EMBEDDING_BACKEND)
+
+   ممكن يكون نفس provider أو provider مختلف.
+   مثال:
+   - generation من Groq
+   - embeddings من OpenAI أو Cohere
+
+8. تحديد موديل embedding:
+   app.embedding_client.set_embedding_model(
+       model_id=settings.EMBEDDING_MODEL_ID,
+       embedding_size=settings.EMBEDDING_MODEL_SIZE
+   )
+
+9. إنشاء vector DB client:
+   app.vectordb_client = vectordb_provider_factory.create(provider=settings.VECTOR_DB_BACKEND)
+   app.vectordb_client.connect()
+
+10. إنشاء TemplateParser:
+    app.template_parser = TemplateParser(
+        language=settings.PRIMARY_LANG,
+        default_language=settings.DEFAULT_LANG
+    )
+
+    ده مسؤول عن تحميل prompt templates بلغة معينة مثل en أو ar.
+
+
+shutdown_db_client
+------------------
+
+الدالة دي بتشتغل عند إغلاق التطبيق:
+
+app.mongo_conn.close()
+app.vectordb_client.disconnect()
+
+يعني تقفل اتصال MongoDB وتفصل Qdrant client.
+
+
+include_router
+--------------
+
+في آخر الملف:
+
+app.include_router(base.base_router)
+app.include_router(data.data_router)
+app.include_router(nlp.nlp_router)
+
+ده بيركب routes داخل التطبيق.
+
+يعني endpoints الموجودة في:
+- base.py
+- data.py
+- nlp.py
+
+هتبقى متاحة لما السيرفر يشتغل.
+
+
+============================================================
+3. ملف src/helpers/config.py
+============================================================
+
+ده ملف إعدادات التطبيق.
+بيستخدم pydantic-settings عشان يقرأ القيم من ملف:
+
+src/.env
+
+الكلاس الرئيسي:
+
+class Settings(BaseSettings):
+
+ده بيحدد كل environment variables التي التطبيق محتاجها.
+
+
+model_config
+------------
+
+model_config = SettingsConfigDict(
+    env_file=Path(__file__).resolve().parents[1] / ".env",
+    env_file_encoding="utf-8",
+    extra="ignore",
+)
+
+معناه:
+
+- ملف البيئة موجود في src/.env.
+- الترميز utf-8.
+- لو فيه مفاتيح زيادة في .env مش موجودة في Settings، تجاهلها.
+
+
+الإعدادات الموجودة
+------------------
+
+APP_NAME:
+اسم التطبيق.
+
+APP_VERSION:
+إصدار التطبيق.
+
+FILE_ALLOWED_TYPES:
+أنواع الملفات المسموح برفعها.
+مثال:
+text/plain
+application/pdf
+
+FILE_MAX_SIZE:
+أقصى حجم للملف بالميجابايت.
+
+FILE_DEFAULT_CHUNK_SIZE:
+حجم القراءة أثناء حفظ الملف المرفوع.
+ده مش نفس chunk الخاص بالـ RAG.
+ده chunk للقراءة والكتابة على الديسك.
+
+MONGODB_URL:
+رابط الاتصال بـ MongoDB.
+
+MONGODB_DATABASE:
+اسم قاعدة البيانات.
+
+GENERATION_BACKEND:
+اسم provider المستخدم في توليد النص.
+مثال:
+OPENAI
+COHERE
+GROQ
+
+EMBEDDING_BACKEND:
+اسم provider المستخدم في embeddings.
+
+OPENAI_API_KEY / COHERE_API_KEY / GROQ_API_KEY:
+مفاتيح API.
+
+GENERATION_MODEL_ID:
+اسم موديل التوليد.
+
+EMBEDDING_MODEL_ID:
+اسم موديل embedding.
+
+EMBEDDING_MODEL_SIZE:
+عدد أبعاد الـ vector الناتج من embedding model.
+مثلا text-embedding-3-small حجمه 1536.
+
+INPUT_DAFAULT_MAX_CHARACTERS:
+أقصى عدد حروف يتم تمريره للموديل من النص.
+لاحظ إن اسم المتغير فيه typo: DAFAULT بدل DEFAULT.
+لكن طالما مستخدم بنفس الاسم في الكود والـ .env، هيشتغل.
+
+GENERATION_DAFAULT_MAX_TOKENS:
+أقصى tokens في إجابة الموديل.
+
+GENERATION_DAFAULT_TEMPERATURE:
+درجة العشوائية في الإجابة.
+
+VECTOR_DB_BACKEND:
+نوع vector database.
+حاليا QDRANT فقط.
+
+VECTOR_DB_PATH:
+مسار تخزين Qdrant المحلي.
+
+VECTOR_DB_DISTANCE_METHOD:
+طريقة حساب التشابه.
+مثل cosine أو dot.
+
+PRIMARY_LANG:
+لغة prompts الأساسية.
+
+DEFAULT_LANG:
+اللغة الافتراضية لو اللغة المطلوبة غير موجودة.
+
+
+parse_file_allowed_types
+------------------------
+
+الدالة دي:
+
+@field_validator("FILE_ALLOWED_TYPES", mode="before")
+
+بتحول FILE_ALLOWED_TYPES من string إلى list.
+
+لو القيمة مثلا:
+
+text/plain,application/pdf
+
+هتتحول إلى:
+
+["text/plain", "application/pdf"]
+
+ملاحظة:
+في .env.example القيمة مكتوبة كده:
+
+FILE_ALLOWED_TYPES=["text/plain", "application/pdf"]
+
+لكن validator الحالي بيقسم string باستخدام comma فقط.
+الأفضل في .env تكون:
+
+FILE_ALLOWED_TYPES=text/plain,application/pdf
+
+لأن الشكل الأول ممكن ينتج عناصر فيها أقواس واقتباسات حسب طريقة قراءة pydantic.
+
+
+get_settings
+------------
+
+@lru_cache
+def get_settings():
+    return Settings()
+
+دي بتقرأ الإعدادات مرة واحدة وتعمل cache.
+ده مفيد لأن كل controller أو route ممكن يحتاج settings، ومش عايزين نقرأ .env كل مرة.
+
+
+============================================================
+4. ملف src/.env.example
+============================================================
+
+ده مثال للإعدادات المطلوبة.
+
+فيه حاليا:
+
+APP_NAME
+APP_VERSION
+OPENAI_API_KEY
+FILE_ALLOWED_TYPES
+FILE_MAX_SIZE
+FILE_DEFAULT_CHUNK_SIZE
+MONGODB_URL
+MONGODB_DATABASE
+
+لكن الكود الحالي يحتاج إعدادات أكثر، مثل:
+
+GENERATION_BACKEND
+EMBEDDING_BACKEND
+GENERATION_MODEL_ID
+EMBEDDING_MODEL_ID
+EMBEDDING_MODEL_SIZE
+VECTOR_DB_BACKEND
+VECTOR_DB_PATH
+VECTOR_DB_DISTANCE_METHOD
+PRIMARY_LANG
+DEFAULT_LANG
+
+لو القيم دي مش موجودة في src/.env، التطبيق ممكن يفشل وقت startup.
+
+
+============================================================
+5. فولدر src/routes
+============================================================
+
+الفولدر ده مسؤول عن API endpoints.
+
+يعني هنا بنحدد:
+- URL
+- HTTP method
+- request body
+- response
+- أي controller يتنادى
+
+
+------------------------------------------------------------
+5.1 ملف src/routes/base.py
+------------------------------------------------------------
+
+بيعمل router بسيط:
+
+prefix="/api/v1"
+
+يعني أي endpoint هنا يبدأ بـ:
+
+/api/v1
+
+فيه endpoint واحد:
+
+GET /api/v1/
+
+الدالة:
+
+welcome()
+
+بتقرأ settings وترجع:
+
+{
+  "app_name": app_name,
+  "app_version": app_version
+}
+
+ده endpoint للاختبار السريع إن التطبيق شغال.
+
+
+------------------------------------------------------------
+5.2 ملف src/routes/data.py
+------------------------------------------------------------
+
+ده مسؤول عن رفع الملفات ومعالجتها.
+
+router:
+
+prefix="/api/v1/data"
+
+يعني endpoints هنا تبدأ بـ:
+
+/api/v1/data
+
+
+Endpoint 1:
+POST /api/v1/data/upload/{project_id}
+
+الدالة:
+
+upload_data(request, project_id, file, app_settings)
+
+وظيفتها رفع ملف وربطه بمشروع معين.
+
+الخطوات بالتفصيل:
+
+1. إنشاء ProjectModel:
+   project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
+
+2. البحث عن project أو إنشاء واحد:
+   project = await project_model.get_project_or_create_one(project_id=project_id)
+
+   لو المشروع موجود في MongoDB يرجعه.
+   لو مش موجود ينشئه.
+
+3. إنشاء DataController:
+   data_controller = DataController()
+
+4. التحقق من الملف:
+   is_valid, result_signal = data_controller.validate_uploaded_file(file=file)
+
+   بيتأكد من:
+   - content_type مسموح
+   - size أقل من الحد الأقصى
+
+5. لو الملف غير صالح:
+   يرجع 400 ومعاه signal مثل:
+   file_type_not_supported
+   أو
+   file_size_exceeded
+
+6. تحديد مسار المشروع:
+   ProjectController().get_project_path(project_id=project_id)
+
+   ده ينشئ فولدر داخل:
+   src/assets/files/{project_id}
+
+7. توليد اسم ملف فريد:
+   file_path, file_id = data_controller.generate_unique_filepath(...)
+
+   بيضيف random string قبل اسم الملف.
+
+8. حفظ الملف على الديسك:
+   async with aiofiles.open(file_path, "wb") as f:
+       while chunk := await file.read(app_settings.FILE_DEFAULT_CHUNK_SIZE):
+           await f.write(chunk)
+
+   هنا بيقرأ الملف على أجزاء عشان ما يحملش الملف كله في الذاكرة.
+
+9. إنشاء AssetModel:
+   asset_model = await AssetModel.create_instance(...)
+
+10. إنشاء سجل Asset:
+    Asset(
+      asset_project_id=project.id,
+      asset_type="file",
+      asset_name=file_id,
+      asset_size=os.path.getsize(file_path)
+    )
+
+11. حفظ سجل asset في MongoDB.
+
+12. يرجع:
+
+{
+  "signal": "file_upload_success",
+  "file_id": "..."
+}
+
+مهم:
+file_id الراجع هنا هو MongoDB ObjectId الخاص بسجل asset، وليس اسم الملف.
+لكن في process endpoint الكود يسمح بالبحث بالـ ObjectId أو باسم الملف.
+
+
+Endpoint 2:
+POST /api/v1/data/process/{project_id}
+
+الدالة:
+
+process_endpoint(request, project_id, process_request)
+
+وظيفتها قراءة الملفات المرفوعة وتقسيمها إلى chunks ثم حفظ chunks في MongoDB.
+
+request body مبني على ProcessRequest:
+
+{
+  "file_id": "optional",
+  "chunk_size": 100,
+  "overlap_size": 20,
+  "do_reset": false
+}
+
+الخطوات:
+
+1. قراءة chunk_size و overlap_size و do_reset.
+
+2. جلب أو إنشاء project.
+
+3. إنشاء AssetModel.
+
+4. لو المستخدم أرسل file_id:
+   - يحاول يجيبه كـ ObjectId.
+   - لو فشل، يحاول يجيبه كـ asset_name.
+   - لو مش موجود يرجع FILE_ID_ERROR.
+
+5. لو المستخدم لم يرسل file_id:
+   - يجيب كل assets الخاصة بالمشروع ونوعها file.
+
+6. لو مفيش ملفات:
+   يرجع NO_FILES_ERROR.
+
+7. إنشاء ProcessController للمشروع.
+
+8. إنشاء ChunkModel.
+
+9. لو do_reset = true:
+   يحذف chunks القديمة لهذا المشروع من MongoDB.
+
+10. لكل ملف:
+    - يقرأ محتواه باستخدام loader مناسب.
+    - يقسمه إلى chunks.
+    - يحول كل chunk إلى DataChunk schema.
+    - يحفظ chunks في MongoDB.
+
+11. يرجع:
+
+{
+  "signal": "processing_success",
+  "inserted_chunks": number,
+  "processed_files": number
+}
+
+
+------------------------------------------------------------
+5.3 ملف src/routes/nlp.py
+------------------------------------------------------------
+
+ده مسؤول عن عمليات NLP:
+- إدخال chunks في vector database.
+- عرض معلومات collection.
+- البحث.
+- توليد إجابة RAG.
+
+router:
+
+prefix="/api/v1/nlp"
+
+
+Endpoint 1:
+POST /api/v1/nlp/index/push/{project_id}
+
+الدالة:
+
+index_project(request, project_id, push_request)
+
+request body:
+
+{
+  "do_reset": false
+}
+
+وظيفتها:
+تاخد chunks المحفوظة في MongoDB وتحولها إلى embeddings وتدخلها في Qdrant.
+
+الخطوات:
+
+1. إنشاء ProjectModel.
+2. إنشاء ChunkModel.
+3. جلب أو إنشاء project.
+4. إنشاء NLPController وتمرير:
+   - vectordb_client
+   - generation_client
+   - embedding_client
+   - template_parser
+5. يقرأ chunks صفحة صفحة.
+   page_size الافتراضي في ChunkModel هو 50.
+6. لكل صفحة chunks:
+   - ينادي index_into_vector_db.
+   - لو أول صفحة و do_reset=true، يمسح collection القديم.
+7. يزيد inserted_items_count.
+8. يرجع:
+
+{
+  "signal": "insert_into_vectordb_success",
+  "inserted_items_count": number
+}
+
+
+Endpoint 2:
+GET /api/v1/nlp/index/info/{project_id}
+
+وظيفته:
+يرجع معلومات Qdrant collection الخاصة بالمشروع.
+
+الخطوات:
+
+1. جلب project.
+2. إنشاء NLPController.
+3. collection name = collection_{project_id}
+4. يرجع collection_info.model_dump()
+
+ملاحظة:
+في الكود فيه comment ظاهر بترميز غلط:
+
+# âœ… ØªØ­ÙˆÙŠÙ„ ...
+
+ده غالبا كان عربي واتحفظ/اتعرض بترميز غلط.
+
+
+Endpoint 3:
+POST /api/v1/nlp/index/search/{project_id}
+
+request body:
+
+{
+  "text": "question here",
+  "limit": 5
+}
+
+وظيفته:
+بحث semantic داخل Qdrant.
+
+الخطوات:
+
+1. جلب project.
+2. إنشاء NLPController.
+3. تحويل search_request.text إلى embedding.
+4. البحث في Qdrant عن أقرب vectors.
+5. تحويل النتائج إلى dict.
+6. يرجع:
+
+{
+  "signal": "vectordb_search_success",
+  "results": [...]
+}
+
+
+Endpoint 4:
+POST /api/v1/nlp/index/answer/{project_id}
+
+request body:
+
+{
+  "text": "question here",
+  "limit": 5
+}
+
+وظيفته:
+توليد إجابة RAG.
+
+الخطوات:
+
+1. جلب project.
+2. إنشاء NLPController.
+3. answer_rag_question:
+   - يبحث عن documents قريبة.
+   - يبني prompt من templates.
+   - يرسل prompt للـ generation client.
+4. يرجع:
+
+{
+  "signal": "rag_answer_success",
+  "answer": "...",
+  "full_prompt": "...",
+  "chat_history": [...]
+}
+
+
+------------------------------------------------------------
+5.4 ملف src/routes/schemes/data.py
+------------------------------------------------------------
+
+فيه Pydantic model اسمه ProcessRequest.
+
+class ProcessRequest(BaseModel):
+    file_id: str = None
+    chunk_size: Optional[int] = 100
+    overlap_size: Optional[int] = 20
+    do_reset: Optional[bool] = False
+
+ده شكل body الخاص بـ:
+
+POST /api/v1/data/process/{project_id}
+
+file_id:
+اختياري. لو موجود يعالج ملف واحد. لو مش موجود يعالج كل ملفات المشروع.
+
+chunk_size:
+عدد الحروف في كل chunk تقريبا.
+
+overlap_size:
+عدد الحروف المشتركة بين كل chunk والتي بعدها.
+الهدف منه الحفاظ على السياق.
+
+do_reset:
+لو true يمسح chunks القديمة للمشروع قبل إدخال الجديدة.
+
+
+------------------------------------------------------------
+5.5 ملف src/routes/schemes/nlp.py
+------------------------------------------------------------
+
+فيه:
+
+PushRequest:
+خاص بعملية push إلى vector DB.
+
+SearchRequest:
+خاص بالبحث والإجابة.
+
+class SearchRequest(BaseModel):
+    text: str
+    limit: Optional[int] = 5
+
+text:
+السؤال أو النص الذي نبحث عنه.
+
+limit:
+عدد النتائج المراد جلبها من Qdrant.
+
+
+============================================================
+6. فولدر src/controllers
+============================================================
+
+الـ controllers هي الطبقة التي تحتوي على منطق التطبيق.
+الـ routes تستقبل request، لكن controllers تعمل الشغل الحقيقي.
+
+
+------------------------------------------------------------
+6.1 ملف BaseController.py
+------------------------------------------------------------
+
+ده controller أساسي ترث منه باقي controllers.
+
+في __init__:
+
+1. يقرأ settings:
+   self.app_settings = get_settings()
+
+2. يحدد base_dir:
+   self.base_dir = os.path.dirname(os.path.dirname(__file__))
+
+   بما إن الملف داخل src/controllers، فـ base_dir هو src.
+
+3. يحدد files_dir:
+   src/assets/files
+
+4. يحدد database_dir:
+   src/assets/database
+
+
+generate_random_string
+----------------------
+
+ينتج string عشوائي من حروف صغيرة وأرقام.
+الافتراضي 12 حرف.
+
+يستخدم في تسمية الملفات المرفوعة عشان يمنع تكرار الأسماء.
+
+
+get_database_path
+-----------------
+
+يأخذ db_name ويرجع path داخل:
+
+src/assets/database/{db_name}
+
+ولو المسار مش موجود ينشئه.
+
+ملاحظة مهمة:
+لو VECTOR_DB_PATH في .env مكتوب:
+
+src/assets/database/qdrant_db
+
+فالكود هيعمل:
+
+src/assets/database/src/assets/database/qdrant_db
+
+لأن get_database_path يضيف db_name داخل database_dir.
+الأفضل إن VECTOR_DB_PATH يكون قيمة بسيطة مثل:
+
+qdrant_db
+
+
+------------------------------------------------------------
+6.2 ملف ProjectController.py
+------------------------------------------------------------
+
+مسؤول عن فولدرات المشاريع داخل assets/files.
+
+get_project_path(project_id)
+
+يرجع:
+
+src/assets/files/{project_id}
+
+ولو الفولدر مش موجود ينشئه.
+
+مثال:
+
+project_id = "demo"
+
+المسار:
+
+src/assets/files/demo
+
+
+------------------------------------------------------------
+6.3 ملف DataController.py
+------------------------------------------------------------
+
+مسؤول عن:
+- validation للملفات.
+- توليد مسار فريد للملف.
+- تنظيف اسم الملف.
+
+
+validate_uploaded_file
+----------------------
+
+يأخذ UploadFile.
+
+يتحقق من:
+
+1. نوع الملف:
+   file.content_type in FILE_ALLOWED_TYPES
+
+2. حجم الملف:
+   file.size <= FILE_MAX_SIZE * 1048576
+
+لو النوع غير مدعوم:
+يرجع:
+
+False, "file_type_not_supported"
+
+لو الحجم أكبر من المسموح:
+يرجع:
+
+False, "file_size_exceeded"
+
+لو الملف صحيح:
+يرجع:
+
+True, "file_validate_successfully"
+
+
+generate_unique_filepath
+------------------------
+
+يأخذ:
+- orig_file_name
+- project_id
+
+الخطوات:
+
+1. يولد random_key.
+2. يجيب project_path.
+3. ينظف اسم الملف.
+4. يبني اسم جديد:
+   random_key + "_" + cleaned_file_name
+5. لو الاسم موجود فعلا، يولد random_key جديد.
+6. يرجع:
+   - full file path
+   - file id / file name المحفوظ
+
+
+get_clean_file_name
+-------------------
+
+ينظف اسم الملف باستخدام regex:
+
+re.sub(r'[^\w.]', '', orig_file_name.strip())
+
+يعني يسمح فقط بـ:
+- حروف
+- أرقام
+- underscore
+- dot
+
+ملاحظة:
+الكود بعد كده يعمل:
+
+cleaned_file_name = cleaned_file_name.replace(" ", "_")
+
+لكن السطر الأول أصلا حذف المسافات، فالسطر ده غالبا ملوش تأثير.
+
+
+------------------------------------------------------------
+6.4 ملف ProcessController.py
+------------------------------------------------------------
+
+مسؤول عن قراءة الملفات وتحويلها إلى chunks.
+
+في __init__:
+
+يأخذ project_id.
+يحدد project_path:
+
+src/assets/files/{project_id}
+
+
+get_file_extension
+------------------
+
+يرجع امتداد الملف.
+
+مثال:
+
+abc.pdf -> .pdf
+file.txt -> .txt
+
+
+get_file_loader
+---------------
+
+يحدد loader المناسب حسب الامتداد:
+
+لو .txt:
+يستخدم TextLoader من langchain_community.
+
+لو .pdf:
+يستخدم PyMuPDFLoader.
+
+لو الملف غير موجود أو امتداد غير مدعوم:
+يرجع None.
+
+
+get_file_content
+----------------
+
+يجيب loader ثم ينادي:
+
+loader.load()
+
+الناتج list من Document objects.
+كل Document فيه:
+- page_content
+- metadata
+
+
+process_file_content
+--------------------
+
+يستخدم:
+
+RecursiveCharacterTextSplitter
+
+لعمل chunks.
+
+parameters:
+
+chunk_size:
+حجم كل chunk.
+
+chunk_overlap:
+المسافة المشتركة بين chunks.
+
+length_function=len:
+القياس بعدد الحروف.
+
+بعدها يأخذ:
+
+file_content_texts:
+النصوص.
+
+file_content_metadata:
+metadata لكل صفحة أو جزء.
+
+ثم:
+
+text_splitter.create_documents(...)
+
+ويرجع chunks جاهزة للحفظ.
+
+
+------------------------------------------------------------
+6.5 ملف NLPController.py
+------------------------------------------------------------
+
+ده قلب جزء RAG.
+
+يأخذ في constructor:
+
+- vectordb_client
+- generation_client
+- embedding_client
+- template_parser
+
+
+create_collection_name
+----------------------
+
+يحول project_id إلى اسم collection:
+
+collection_{project_id}
+
+مثال:
+
+project_id = demo
+collection name = collection_demo
+
+
+reset_vector_db_collection
+--------------------------
+
+يمسح collection من vector DB لو موجود.
+
+
+get_vector_db_collection_info
+-----------------------------
+
+يرجع معلومات collection من Qdrant.
+
+
+index_into_vector_db
+--------------------
+
+دي أهم دالة في الفهرسة.
+
+تأخذ:
+- project
+- chunks
+- do_reset
+- chunks_ids
+
+الخطوات:
+
+1. تعمل collection name.
+
+2. تستخرج النصوص:
+   texts = [c.chunk_text for c in chunks]
+
+3. تستخرج metadata:
+   metadata = [c.chunk_metadata for c in chunks]
+
+4. تحول النصوص إلى embeddings:
+   vectors = self.embedding_client.embed_texts(...)
+
+5. تتأكد إن عدد vectors يساوي عدد texts.
+
+6. لو chunks_ids غير موجودة، تعمل list بنفس الطول كلها None.
+
+7. تنشئ collection في Qdrant:
+   self.vectordb_client.create_collection(...)
+
+8. تدخل البيانات:
+   self.vectordb_client.insert_many(...)
+
+9. ترجع True لو العملية تمت.
+
+
+search_vector_db_collection
+---------------------------
+
+ملاحظة مهمة:
+في الملف فيه دالتين بنفس الاسم:
+
+def search_vector_db_collection(...)
+
+في Python آخر تعريف هو اللي يشتغل.
+يعني التعريف الثاني يغطي الأول تماما.
+
+التعريف الثاني يعمل:
+
+1. يحدد collection name.
+2. يحول query إلى vector.
+3. يبحث في Qdrant.
+4. يرجع results أو False.
+
+
+answer_rag_question
+-------------------
+
+دي تولد إجابة RAG.
+
+الخطوات:
+
+1. تبحث عن documents مرتبطة بالسؤال:
+   retrieved_documents = self.search_vector_db_collection(...)
+
+2. لو مفيش نتائج:
+   ترجع None values.
+
+3. تجيب system prompt من template parser:
+   self.template_parser.get("rag", "system_prompt")
+
+4. تبني document prompts لكل document:
+
+   document_prompt يحتوي على:
+   - رقم المستند
+   - نص chunk
+
+5. تجيب footer prompt.
+
+6. تبني chat_history وفيه system message.
+
+7. تبني full_prompt من:
+   documents_prompts + footer_prompt
+
+8. تبعت prompt للـ generation client:
+   self.generation_client.generate_text(...)
+
+9. ترجع:
+   - answer
+   - full_prompt
+   - chat_history
+
+
+ملاحظات على NLPController
+-------------------------
+
+1. يوجد import غير مستخدم:
+   import json
+
+2. يوجد duplicate method:
+   search_vector_db_collection معرفة مرتين.
+   الأفضل حذف واحدة والإبقاء على نسخة واحدة واضحة.
+
+3. answer_rag_question يعتمد على:
+   self.generation_client.enums.SYSTEM.value
+
+   لذلك كل provider لازم يكون عنده enums.
+   OpenAIProvider و CoHereProvider تم إضافة enums لهم.
+
+
+============================================================
+7. فولدر src/models
+============================================================
+
+الفولدر ده فيه طبقتين:
+
+1. Data access models:
+   ProjectModel
+   AssetModel
+   ChunkModel
+
+2. Pydantic schemas:
+   Project
+   Asset
+   DataChunk
+   RetrievedDocument
+
+
+------------------------------------------------------------
+7.1 ملف BaseDataModel.py
+------------------------------------------------------------
+
+كلاس بسيط:
+
+class BaseDataModel:
+
+يخزن:
+
+- db_client
+- app_settings
+
+كل model يتعامل مع MongoDB يرث منه.
+
+
+------------------------------------------------------------
+7.2 ملف ProjectModel.py
+------------------------------------------------------------
+
+مسؤول عن collection اسمها:
+
+projects
+
+يستخدم:
+
+DataBaseEnum.COLLECTION_PROJECT_NAME.value
+
+
+create_instance
+---------------
+
+classmethod async.
+
+ينشئ instance ثم ينادي init_collection.
+
+الفكرة:
+قبل ما تستخدم model، يتأكد إن collection والفهارس موجودة.
+
+
+init_collection
+---------------
+
+يتأكد إن collection موجودة.
+لو مش موجودة:
+
+1. ينشئ collection reference.
+2. يقرأ indexes من Project.get_indexes().
+3. ينشئ index لكل واحد.
+
+
+create_project
+--------------
+
+يحفظ project في MongoDB.
+بعد insert_one يضع inserted_id داخل project.id.
+
+
+get_project_or_create_one
+-------------------------
+
+يبحث عن project باستخدام project_id.
+
+لو موجود:
+يرجع Project(**record)
+
+لو غير موجود:
+ينشئ Project جديد ويحفظه.
+
+ده معناه إن أي API تستخدم project_id جديد هتنشئ project تلقائيا.
+
+
+get_all_projects
+----------------
+
+يرجع كل المشاريع بنظام pagination.
+حاليا مش مستخدمة في routes، لكنها جاهزة لو عايز endpoint لعرض المشاريع.
+
+
+------------------------------------------------------------
+7.3 ملف AssetModel.py
+------------------------------------------------------------
+
+مسؤول عن collection اسمها:
+
+assets
+
+Asset يعني ملف أو مورد مرتبط بمشروع.
+
+
+create_asset
+------------
+
+يحفظ asset في MongoDB.
+
+
+get_all_project_assets
+----------------------
+
+يجيب كل assets لمشروع معين ونوع معين.
+
+يحول asset_project_id إلى ObjectId لو كان string.
+
+
+get_asset_record
+----------------
+
+يبحث عن asset باستخدام:
+
+- asset_project_id
+- asset_name
+
+asset_name هو اسم الملف المحفوظ على الديسك.
+
+
+get_asset_record_by_id
+----------------------
+
+يبحث عن asset باستخدام MongoDB _id.
+
+لو asset_id ليس ObjectId صالح:
+يرجع None.
+
+
+------------------------------------------------------------
+7.4 ملف ChunkModel.py
+------------------------------------------------------------
+
+مسؤول عن collection اسمها:
+
+chunks
+
+كل chunk عبارة عن جزء من ملف.
+
+
+create_chunk
+------------
+
+يحفظ chunk واحد.
+
+
+get_chunk
+---------
+
+يجيب chunk باستخدام _id.
+
+
+insert_many_chunks
+------------------
+
+يحفظ chunks كثيرة باستخدام bulk_write.
+
+يقسم chunks إلى batches.
+batch_size الافتراضي 100.
+
+ده أفضل من insert_one لكل chunk لأنه أسرع.
+
+
+delete_chunks_by_project_id
+---------------------------
+
+يحذف كل chunks الخاصة بمشروع.
+يستخدم عندما do_reset=true في processing.
+
+
+get_poject_chunks
+-----------------
+
+يرجع chunks الخاصة بمشروع بنظام pagination.
+
+ملاحظة:
+اسم الدالة فيه typo:
+
+get_poject_chunks
+
+المفروض:
+
+get_project_chunks
+
+لكن طالما route يستخدم نفس الاسم، الكود يشتغل.
+
+
+------------------------------------------------------------
+7.5 ملف src/models/db_schemes/project.py
+------------------------------------------------------------
+
+فيه Pydantic schema:
+
+Project
+
+الحقول:
+
+id:
+MongoDB ObjectId ويظهر باسم _id في قاعدة البيانات.
+
+project_id:
+string مطلوب ولازم طوله أكبر من 0.
+
+
+validate_project_id
+-------------------
+
+يتأكد إن project_id alphanumeric.
+
+يعني حروف وأرقام فقط.
+
+مهم:
+لو استخدمت project_id فيه dash مثل:
+
+demo-project
+
+validator هيرفضه لأن dash ليس alphanumeric.
+
+الأفضل تستخدم:
+
+demoproject
+
+أو تعدل validation لو عايز تسمح بـ dash و underscore.
+
+
+get_indexes
+-----------
+
+يرجع index على project_id ويكون unique.
+يعني لا يمكن وجود مشروعين بنفس project_id.
+
+
+------------------------------------------------------------
+7.6 ملف src/models/db_schemes/asset.py
+------------------------------------------------------------
+
+فيه schema:
+
+Asset
+
+الحقول:
+
+id:
+MongoDB _id.
+
+asset_project_id:
+ObjectId للمشروع.
+
+asset_type:
+نوع asset، حاليا file.
+
+asset_name:
+اسم الملف المحفوظ على الديسك.
+
+asset_size:
+حجم الملف.
+
+asset_config:
+إعدادات إضافية اختيارية.
+
+asset_pushed_at:
+وقت إنشاء asset.
+
+
+get_indexes
+-----------
+
+ينشئ:
+
+1. index على asset_project_id.
+2. unique index على asset_project_id + asset_name.
+
+ده يمنع تسجيل نفس اسم الملف مرتين لنفس المشروع.
+
+
+------------------------------------------------------------
+7.7 ملف src/models/db_schemes/data_chunk.py
+------------------------------------------------------------
+
+فيه:
+
+DataChunk
+RetrievedDocument
+
+
+DataChunk
+---------
+
+يمثل chunk محفوظ في MongoDB.
+
+الحقول:
+
+id:
+MongoDB _id.
+
+chunk_text:
+النص.
+
+chunk_metadata:
+metadata من loader.
+
+chunk_order:
+ترتيب chunk داخل الملف.
+
+chunk_project_id:
+ObjectId للمشروع.
+
+chunk_asset_id:
+ObjectId للملف.
+
+
+get_indexes
+-----------
+
+ينشئ index على chunk_project_id.
+ده يسرع جلب chunks الخاصة بمشروع.
+
+
+RetrievedDocument
+-----------------
+
+ده schema بسيط لنتيجة البحث من Qdrant.
+
+الحقول:
+
+text:
+النص المسترجع.
+
+score:
+درجة التشابه.
+
+
+------------------------------------------------------------
+7.8 ملفات enums
+------------------------------------------------------------
+
+AssetTypeEnum.py
+----------------
+
+FILE = "file"
+
+يستخدم لتحديد نوع asset.
+
+
+DataBaseEnum.py
+---------------
+
+يحدد أسماء collections:
+
+projects
+chunks
+assets
+
+
+ProcessingEnum.py
+-----------------
+
+يحدد الامتدادات المدعومة في المعالجة:
+
+.txt
+.pdf
+
+
+ResponseEnums.py
+----------------
+
+يحدد signals الراجعة من API.
+
+مثال:
+
+FILE_UPLOAD_SUCCESS = "file_upload_success"
+PROCESSING_SUCCESS = "processing_success"
+VECTORDB_SEARCH_SUCCESS = "vectordb_search_success"
+RAG_ANSWER_SUCCESS = "rag_answer_success"
+
+الفكرة إن بدل ما ترجع strings عشوائية من كل مكان، تستخدم enum موحد.
+
+
+src/models/__init__.py
+----------------------
+
+يعمل re-export لبعض enums:
+
+from .enums.ResponseEnums import ResponseSignal
+from .enums.ProcessingEnum import ProcessingEnum
+
+عشان تقدر تكتب:
+
+from models import ResponseSignal
+
+بدل import طويل.
+
+
+============================================================
+8. فولدر src/stores/llm
+============================================================
+
+ده مسؤول عن التعامل مع LLM providers.
+
+الفكرة إن التطبيق لا يتعامل مباشرة مع OpenAI أو Cohere في routes.
+بدل كده يوجد interface مشترك و factory.
+
+
+------------------------------------------------------------
+8.1 ملف LLMInterface.py
+------------------------------------------------------------
+
+ده abstract base class.
+
+يحدد methods لازم أي provider ينفذها:
+
+set_generation_model
+set_embedding_model
+generate_text
+embed_text
+embed_texts
+construct_prompt
+
+الهدف:
+أي provider جديد لازم يلتزم بنفس الشكل.
+
+مثلا لو أضفت GeminiProvider، لازم ينفذ نفس الدوال.
+
+ملاحظة:
+التعليقات العربية في الملف ظاهرة بترميز غلط.
+الأفضل إعادة حفظ الملف UTF-8 أو كتابة التعليقات من جديد.
+
+
+------------------------------------------------------------
+8.2 ملف LLMEnums.py
+------------------------------------------------------------
+
+فيه enums خاصة بالـ LLM.
+
+
+LLMEnums
+--------
+
+OPENAI
+COHERE
+GROQ
+
+تستخدم في factory لاختيار provider.
+
+
+OpenAIEnums
+-----------
+
+roles الخاصة بـ OpenAI:
+
+system
+user
+assistant
+
+
+CoHereEnums
+-----------
+
+roles الخاصة بـ Cohere:
+
+SYSTEM
+USER
+CHATBOT
+
+وكمان input types الخاصة بالـ embeddings:
+
+search_document
+search_query
+
+
+DocumentTypeEnum
+----------------
+
+document
+query
+
+يستخدم عشان نعرف هل embedding للنصوص المخزنة أم لسؤال المستخدم.
+
+
+GroqEnums
+---------
+
+roles الخاصة بـ Groq:
+
+system
+user
+assistant
+
+
+------------------------------------------------------------
+8.3 ملف LLMProviderFactory.py
+------------------------------------------------------------
+
+ده factory يختار provider حسب string في settings.
+
+create(provider)
+
+لو provider == "OPENAI":
+يرجع OpenAIProvider.
+
+لو provider == "COHERE":
+يرجع CoHereProvider.
+
+لو provider == "GROQ":
+يرجع GroqProvider.
+
+لو provider غير معروف:
+يرجع None.
+
+ده مستخدم في main.py لإنشاء:
+
+- generation_client
+- embedding_client
+
+
+------------------------------------------------------------
+8.4 ملف providers/OpenAIProvider.py
+------------------------------------------------------------
+
+ده implementation للتعامل مع OpenAI.
+
+في __init__:
+
+يحفظ:
+- api_key
+- api_url
+- default_input_max_characters
+- default_generation_max_output_tokens
+- default_generation_temperature
+
+ويعمل:
+
+self.client = OpenAI(...)
+
+
+set_generation_model
+--------------------
+
+يحفظ اسم موديل التوليد.
+
+
+set_embedding_model
+-------------------
+
+يحفظ:
+- embedding_model_id
+- embedding_size
+
+
+process_text
+------------
+
+يقص النص إلى:
+
+default_input_max_characters
+
+ثم strip.
+
+ده حماية من إدخال نص كبير جدا للموديل.
+
+
+generate_text
+-------------
+
+الخطوات:
+
+1. يتأكد إن client موجود.
+2. يتأكد إن generation_model_id موجود.
+3. يحدد max_output_tokens و temperature.
+4. يضيف رسالة user إلى chat_history.
+5. ينادي:
+
+client.chat.completions.create(...)
+
+6. يرجع response.choices[0].message.content.
+
+
+embed_text
+----------
+
+يحول نص واحد إلى embedding عن طريق embed_texts.
+
+
+embed_texts
+-----------
+
+يحول list من النصوص إلى embeddings.
+
+ينادي:
+
+self.client.embeddings.create(
+    model=self.embedding_model_id,
+    input=processed_texts
+)
+
+ثم يرجع list من embeddings مرتبة حسب index.
+
+
+construct_prompt
+----------------
+
+يرجع dict مناسب لـ OpenAI:
+
+{
+  "role": role,
+  "content": text
+}
+
+
+------------------------------------------------------------
+8.5 ملف providers/CoHereProvider.py
+------------------------------------------------------------
+
+ده implementation للتعامل مع Cohere.
+
+يشبه OpenAIProvider لكن API مختلف.
+
+
+generate_text
+-------------
+
+ينادي:
+
+self.client.chat(...)
+
+ويمرر:
+- model
+- chat_history
+- message
+- temperature
+- max_tokens
+
+ويرجع response.text.
+
+
+embed_texts
+-----------
+
+Cohere يحتاج input_type:
+
+search_document للنصوص المخزنة.
+search_query للسؤال.
+
+الكود يحدد input_type بناء على document_type.
+
+يقسم النصوص batches بحجم 96.
+
+ينادي:
+
+self.client.embed(
+    model=self.embedding_model_id,
+    texts=batch,
+    input_type=input_type,
+    embedding_types=['float']
+)
+
+ثم يجمع embeddings.
+
+
+construct_prompt
+----------------
+
+يرجع dict مناسب لـ Cohere:
+
+{
+  "role": role,
+  "text": text
+}
+
+
+------------------------------------------------------------
+8.6 ملف providers/GroqProvider.py
+------------------------------------------------------------
+
+ده implementation للتعامل مع Groq للتوليد.
+
+يستخدم:
+
+from groq import Groq
+
+
+generate_text
+-------------
+
+يشبه OpenAI chat completions.
+
+ينادي:
+
+self.client.chat.completions.create(...)
+
+ملاحظة:
+الكود لا يمرر temperature ولا max_tokens للـ API رغم أنه يحسبهم.
+
+
+embed_text / embed_texts
+-----------------------
+
+embed_text فيها pass.
+
+يعني GroqProvider حاليا لا يدعم embeddings فعليا.
+
+embed_texts ترجع list من نتائج embed_text، وبما إن embed_text ترجع None، فالناتج list من None.
+
+لذلك:
+لا تستخدم GROQ كـ EMBEDDING_BACKEND حاليا.
+
+ممكن تستخدم:
+
+GENERATION_BACKEND=GROQ
+EMBEDDING_BACKEND=OPENAI
+
+أو:
+
+GENERATION_BACKEND=GROQ
+EMBEDDING_BACKEND=COHERE
+
+
+============================================================
+9. فولدر src/stores/vectordb
+============================================================
+
+ده مسؤول عن Vector Database.
+حاليا المستخدم هو Qdrant فقط.
+
+
+------------------------------------------------------------
+9.1 ملف VectorDBInerface.py
+------------------------------------------------------------
+
+ملاحظة:
+اسم الملف فيه typo:
+
+VectorDBInerface
+
+المفروض:
+
+VectorDBInterface
+
+لكن طالما imports تستخدم نفس الاسم، الكود يشتغل.
+
+الكلاس VectorDBInterface يحدد methods لازم أي vector DB provider ينفذها:
+
+- connect
+- disconnect
+- is_collection_existed
+- list_all_collections
+- get_collection_info
+- delete_collection
+- create_collection
+- insert_one
+- insert_many
+- search_by_vector
+
+ده يسمح بإضافة provider آخر مستقبلا مثل Pinecone أو Weaviate.
+
+
+------------------------------------------------------------
+9.2 ملف VectorDBEnums.py
+------------------------------------------------------------
+
+VectorDBEnums:
+
+QDRANT = "QDRANT"
+
+DistanceMethodEnums:
+
+COSINE = "cosine"
+DOT = "dot"
+
+cosine و dot هما طرق قياس التشابه بين vectors.
+
+
+------------------------------------------------------------
+9.3 ملف VectorDBProviderFactory.py
+------------------------------------------------------------
+
+factory لاختيار vector DB provider.
+
+لو provider == QDRANT:
+
+1. ينشئ db_path باستخدام:
+   BaseController().get_database_path(...)
+
+2. يرجع QdrantDBProvider.
+
+لو provider غير معروف:
+يرجع None.
+
+ملاحظة مهمة:
+كما ذكرت سابقا، config.VECTOR_DB_PATH الأفضل يكون اسم فولدر فقط مثل:
+
+qdrant_db
+
+وليس path كامل يبدأ بـ src/assets/database.
+
+
+------------------------------------------------------------
+9.4 ملف provider/QdrantDBProvider.py
+------------------------------------------------------------
+
+ده implementation لـ Qdrant.
+
+
+__init__
+--------
+
+يأخذ:
+- db_path
+- distance_method
+
+يحدد:
+
+self.distance_method = models.Distance.COSINE
+
+بشكل افتراضي.
+
+ملاحظة مهمة:
+الكود يقارن:
+
+if distance_method == DistanceMethodEnums.COSINE:
+
+لكن distance_method غالبا string مثل "cosine"، بينما DistanceMethodEnums.COSINE هو Enum object.
+الأفضل المقارنة تكون:
+
+if distance_method == DistanceMethodEnums.COSINE.value:
+
+حاليا لو أرسلت "dot" من .env، قد لا يتم تفعيل DOT بسبب المقارنة.
+
+
+connect
+-------
+
+ينشئ:
+
+QdrantClient(path=self.db_path)
+
+ده Qdrant local file-based.
+
+
+disconnect
+----------
+
+يجعل client = None.
+
+
+is_collection_existed
+---------------------
+
+يتأكد هل collection موجودة.
+
+
+list_all_collections
+--------------------
+
+يرجع كل collections.
+
+
+get_collection_info
+-------------------
+
+يرجع معلومات collection.
+
+
+delete_collection
+-----------------
+
+يمسح collection لو موجودة.
+
+
+create_collection
+-----------------
+
+لو do_reset=true:
+يمسح collection القديم.
+
+لو collection غير موجود:
+ينشئ collection جديد بـ:
+
+vectors_config=models.VectorParams(
+    size=embedding_size,
+    distance=self.distance_method
+)
+
+embedding_size لازم يطابق حجم vectors الناتجة من embedding model.
+
+
+insert_one
+----------
+
+يدخل record واحد في Qdrant.
+
+الـ record يحتوي على:
+
+- id
+- vector
+- payload:
+  - text
+  - metadata
+
+لو record_id غير موجود، يولد uuid.
+
+
+insert_many
+-----------
+
+يدخل records كثيرة على batches.
+
+لكل text/vector/metadata يبني models.Record.
+
+ثم يستخدم:
+
+self.client.upload_records(...)
+
+
+search_by_vector
+----------------
+
+يبحث عن أقرب vectors باستخدام:
+
+self.client.search(
+    collection_name=collection_name,
+    query_vector=vector,
+    limit=limit
+)
+
+ويرجع list من RetrievedDocument:
+
+{
+  "score": res.score,
+  "text": res.payload["text"]
+}
+
+
+============================================================
+10. فولدر src/stores/llm/templates
+============================================================
+
+الفولدر ده مسؤول عن prompt templates.
+
+
+------------------------------------------------------------
+10.1 ملف template_parser.py
+------------------------------------------------------------
+
+TemplateParser يقرأ templates حسب اللغة.
+
+في __init__:
+
+- يحدد current_path.
+- يحفظ default_language.
+- يستدعي set_language.
+
+
+set_language
+------------
+
+لو language غير موجودة:
+يستخدم default_language.
+
+لو فولدر اللغة موجود:
+
+src/stores/llm/templates/locales/{language}
+
+يستخدمها.
+
+غير كده يرجع للغة الافتراضية.
+
+ملاحظة:
+لو language = None، الكود يعمل:
+
+self.language = self.default_language
+
+لكن بعد كده يكمل ويبني:
+
+language_path = ... language
+
+لو language None، os.path.join ممكن يتعامل بشكل غير متوقع.
+الأفضل بعد setting default يعمل return.
+
+
+get(group, key, vars)
+---------------------
+
+مثال:
+
+self.template_parser.get("rag", "system_prompt")
+
+الخطوات:
+
+1. يبني path:
+   locales/{language}/{group}.py
+
+2. لو الملف مش موجود، يجرب default language.
+
+3. يستورد module باستخدام __import__.
+
+4. يجيب attribute بالاسم key.
+
+5. ينادي:
+   key_attribute.substitute(vars)
+
+يعني template لازم يكون string.Template.
+
+
+------------------------------------------------------------
+10.2 ملف locales/en/rag.py
+------------------------------------------------------------
+
+فيه prompt templates باللغة الإنجليزية.
+
+system_prompt:
+تعليمات عامة للموديل.
+تقول له:
+- أنت مساعد لتوليد إجابة.
+- ستستلم documents مرتبطة بسؤال المستخدم.
+- جاوب بناء على documents.
+- تجاهل غير المرتبط.
+- جاوب بنفس لغة السؤال.
+- كن مختصرا ومحترما.
+
+document_prompt:
+
+يبني شكل كل document:
+
+## Document No: $doc_num
+### Content: $chunk_text
+
+footer_prompt:
+
+يقول للموديل:
+
+Based only on the above documents, please generate an answer for the user.
+## Answer:
+
+
+------------------------------------------------------------
+10.3 ملف locales/ar/rag.py
+------------------------------------------------------------
+
+مفترض يحتوي على نفس templates لكن بالعربية.
+
+لكن النص الحالي ظاهر بترميز غلط.
+ده معناه إن الملف غالبا كان عربي واتحفظ أو اتعرض encoding بشكل غير صحيح.
+
+لو هتستخدم PRIMARY_LANG=ar، الأفضل إصلاح الملف وإعادة كتابة النص العربي بترميز UTF-8.
+
+
+============================================================
+11. فولدر src/assets
+============================================================
+
+assets يحتوي على ملفات runtime وملفات مساعدة.
+
+
+src/assets/files
+----------------
+
+هنا تحفظ الملفات التي يرفعها المستخدم.
+
+كل project له فولدر:
+
+src/assets/files/{project_id}
+
+مثال:
+
+src/assets/files/demo/file.pdf
+
+هذا الفولدر runtime data ولا يفضل رفع محتواه على GitHub.
+
+
+src/assets/database
+-------------------
+
+هنا تحفظ Qdrant local database.
+
+هذا أيضا runtime data ولا يفضل رفعه على GitHub.
+
+
+src/assets/mini-rag-app.postman_collection.json
+-----------------------------------------------
+
+ملف Postman collection.
+
+حاليا يحتوي على request واحد اسمه welcome-request.
+
+ملاحظة:
+الـ URL فيه:
+
+{{api}}/welcome
+
+لكن التطبيق الحالي يستخدم:
+
+/api/v1/
+
+يعني Postman collection قديمة أو تحتاج تحديث.
+
+كمان variable api قيمته:
+
+http://127.0.0.1:8000
+
+بينما README والتشغيل الحالي يستخدم port 5000.
+
+
+============================================================
+12. ملف src/start.sh
+============================================================
+
+سكريبت Bash بسيط:
+
+pip install -r src/requirements.txt
+uvicorn src.main:app --reload --host 0.0.0.0 --port 5000
+
+يعني:
+
+1. يثبت dependencies.
+2. يشغل FastAPI على port 5000.
+
+ملاحظة:
+على Windows، تشغيل .sh يحتاج Git Bash أو WSL.
+
+
+============================================================
+13. ملف src/requirements.txt
+============================================================
+
+ده يحتوي على dependencies:
+
+fastapi:
+إطار عمل API.
+
+uvicorn:
+ASGI server لتشغيل FastAPI.
+
+python-multipart:
+مطلوب لرفع الملفات multipart/form-data.
+
+python-dotenv:
+قراءة environment variables.
+
+pydantic-settings:
+إدارة settings من .env.
+
+aiofiles:
+كتابة الملفات async.
+
+langchain / langchain-community / langchain-text-splitters:
+قراءة وتقسيم documents.
+
+PyMuPDF:
+قراءة PDF.
+
+motor:
+MongoDB async driver.
+
+pydantic-mongo:
+مساعدة في التعامل مع Pydantic و MongoDB.
+
+openai:
+OpenAI SDK.
+
+cohere:
+Cohere SDK.
+
+qdrant-client:
+Qdrant vector DB client.
+
+groq:
+Groq SDK.
+
+
+============================================================
+14. فولدر docker
+============================================================
+
+docker/docker-compose.yml
+
+يشغل MongoDB container.
+
+الخدمة:
+
+mongodb
+
+الصورة:
+
+mongo:7.0-jammy
+
+container_name:
+
+mongodb
+
+ports:
+
+27007:27017
+
+يعني من جهازك تتصل على:
+
+localhost:27007
+
+لكن داخل container هو 27017.
+
+volumes:
+
+mongo_data:/data/db
+
+ده يحفظ بيانات MongoDB حتى لو container اتقفل.
+
+environment:
+
+MONGO_INITDB_ROOT_USERNAME
+MONGO_INITDB_ROOT_PASSWORD
+
+دي لازم تكون موجودة في docker/.env أو environment عند التشغيل.
+
+ملاحظة:
+في الملف comment ظاهر بترميز غلط.
+
+
+============================================================
+15. ملف README.md
+============================================================
+
+README هو ملف شرح المشروع على GitHub.
+
+حاليا مكتوب بالإنجليزية ويحتوي على:
+
+- وصف المشروع.
+- المميزات.
+- هيكل المشروع.
+- المتطلبات.
+- خطوات التثبيت.
+- إعداد .env.
+- تشغيل التطبيق.
+- أمثلة curl.
+- جدول endpoints.
+- ملاحظات مهمة.
+
+ده الملف الذي يظهر مباشرة للزائر على GitHub.
+
+
+============================================================
+16. ملف LICENSE
+============================================================
+
+المشروع يستخدم:
+
+Apache License 2.0
+
+الرخصة دي تسمح للناس باستخدام وتعديل وتوزيع المشروع، مع شروط مثل:
+
+- الاحتفاظ بنسخة من الرخصة.
+- توضيح الملفات المعدلة عند التوزيع.
+- عدم وجود ضمانات من صاحب المشروع.
+- وجود grant خاص بالبراءات patents.
+
+في آخر الملف يوجد appendix رسمي فيه placeholder:
+
+Copyright [yyyy] [name of copyright owner]
+
+ده جزء من النص الرسمي كمثال، وليس بالضرورة مشكلة.
+
+
+============================================================
+17. ملفات __init__.py
+============================================================
+
+في Python، وجود __init__.py يجعل الفولدر package.
+
+مثلا:
+
+src/controllers/__init__.py
+
+يسمح بالاستيراد:
+
+from controllers import DataController
+
+بعض __init__.py فارغة، وده طبيعي.
+بعضها يعمل re-export للكلاسات.
+
+
+============================================================
+18. التدفق الكامل للتطبيق
+============================================================
+
+هنا هنمشي الرحلة من أول تشغيل التطبيق لحد إجابة RAG.
+
+
+المرحلة 1: تشغيل السيرفر
+------------------------
+
+تشغل:
+
+uvicorn src.main:app --reload --host 0.0.0.0 --port 5000
+
+FastAPI يبدأ.
+
+main.py يشغل startup:
+
+1. يقرأ .env.
+2. يتصل بـ MongoDB.
+3. ينشئ generation client.
+4. ينشئ embedding client.
+5. يتصل بـ Qdrant.
+6. ينشئ TemplateParser.
+7. يركب routes.
+
+
+المرحلة 2: رفع ملف
+-----------------
+
+تطلب:
+
+POST /api/v1/data/upload/{project_id}
+
+مع file.
+
+الكود:
+
+1. يتأكد إن project موجود في MongoDB أو ينشئه.
+2. يتحقق من نوع وحجم الملف.
+3. ينشئ فولدر المشروع.
+4. يحفظ الملف على الديسك.
+5. يسجل asset في MongoDB.
+6. يرجع file_id.
+
+
+المرحلة 3: معالجة الملف
+-----------------------
+
+تطلب:
+
+POST /api/v1/data/process/{project_id}
+
+الكود:
+
+1. يجيب project.
+2. يجيب file asset.
+3. يقرأ الملف من الديسك.
+4. لو txt يستخدم TextLoader.
+5. لو pdf يستخدم PyMuPDFLoader.
+6. يقسم النص إلى chunks.
+7. يحفظ chunks في MongoDB.
+
+
+المرحلة 4: فهرسة chunks
+-----------------------
+
+تطلب:
+
+POST /api/v1/nlp/index/push/{project_id}
+
+الكود:
+
+1. يجيب chunks من MongoDB.
+2. يحول chunk_text إلى embeddings.
+3. ينشئ Qdrant collection.
+4. يدخل كل chunk مع vector و metadata.
+
+
+المرحلة 5: البحث
+----------------
+
+تطلب:
+
+POST /api/v1/nlp/index/search/{project_id}
+
+الكود:
+
+1. يحول السؤال إلى embedding.
+2. يبحث في Qdrant.
+3. يرجع أقرب chunks.
+
+
+المرحلة 6: إجابة RAG
+-------------------
+
+تطلب:
+
+POST /api/v1/nlp/index/answer/{project_id}
+
+الكود:
+
+1. يعمل search.
+2. يجيب أقرب documents.
+3. يبني prompt من templates.
+4. يرسل prompt إلى generation model.
+5. يرجع answer.
+
+
+============================================================
+19. أهم الملاحظات والمشاكل المحتملة
+============================================================
+
+1. ملف .env.example ناقص
+------------------------
+
+الكود يحتاج إعدادات غير موجودة كلها في .env.example.
+لازم تضيف القيم الخاصة بـ:
+
+GENERATION_BACKEND
+EMBEDDING_BACKEND
+GENERATION_MODEL_ID
+EMBEDDING_MODEL_ID
+EMBEDDING_MODEL_SIZE
+INPUT_DAFAULT_MAX_CHARACTERS
+GENERATION_DAFAULT_MAX_TOKENS
+GENERATION_DAFAULT_TEMPERATURE
+VECTOR_DB_BACKEND
+VECTOR_DB_PATH
+VECTOR_DB_DISTANCE_METHOD
+PRIMARY_LANG
+DEFAULT_LANG
+
+
+2. project_id لا يقبل dash
+-------------------------
+
+Project validator يستخدم:
+
+value.isalnum()
+
+يعني demo-project هيفشل.
+استخدم demoproject أو عدل validator.
+
+
+3. VECTOR_DB_PATH قد يعمل path مكرر
+----------------------------------
+
+BaseController.get_database_path يضيف db_name داخل src/assets/database.
+
+لذلك الأفضل:
+
+VECTOR_DB_PATH=qdrant_db
+
+وليس:
+
+VECTOR_DB_PATH=src/assets/database/qdrant_db
+
+
+4. Groq لا يدعم embeddings حاليا
+--------------------------------
+
+GroqProvider.embed_text فيها pass.
+
+لا تستخدم:
+
+EMBEDDING_BACKEND=GROQ
+
+
+5. search_vector_db_collection مكررة
+------------------------------------
+
+في NLPController نفس الدالة معرفة مرتين.
+Python تستخدم الثانية فقط.
+الأفضل حذف الأولى أو دمج المنطق.
+
+
+6. أخطاء encoding في بعض الملفات
+--------------------------------
+
+في ملفات مثل:
+
+- LLMInterface.py
+- locales/ar/rag.py
+- docker-compose.yml
+- routes/nlp.py comments
+
+فيه نص عربي ظاهر كرموز غريبة.
+الأفضل إعادة كتابته بترميز UTF-8.
+
+
+7. Distance method comparison
+-----------------------------
+
+في QdrantDBProvider:
+
+if distance_method == DistanceMethodEnums.COSINE:
+
+الأفضل:
+
+if distance_method == DistanceMethodEnums.COSINE.value:
+
+نفس الكلام مع DOT.
+
+
+8. Postman collection قديم
+--------------------------
+
+Postman request يستخدم /welcome و port 8000.
+لكن التطبيق الحالي يستخدم /api/v1/ و port 5000.
+
+
+9. أسماء فيها typos
+-------------------
+
+أمثلة:
+
+VectorDBInerface.py
+get_poject_chunks
+INPUT_DAFAULT_MAX_CHARACTERS
+GENERATION_DAFAULT_MAX_TOKENS
+
+طالما كل الكود يستخدم نفس الاسم، يشتغل.
+لكن الأفضل تصحيحها مستقبلا بشكل منظم.
+
+
+============================================================
+20. ملخص سريع لكل Folder
+============================================================
+
+src/
+الكود الأساسي للتطبيق.
+
+src/routes/
+تعريف API endpoints.
+
+src/controllers/
+منطق التطبيق.
+
+src/models/
+MongoDB access layer و schemas.
+
+src/stores/llm/
+التعامل مع LLM providers.
+
+src/stores/vectordb/
+التعامل مع Qdrant.
+
+src/stores/llm/templates/
+Prompt templates للـ RAG.
+
+src/helpers/
+قراءة settings من .env.
+
+src/assets/files/
+الملفات المرفوعة.
+
+src/assets/database/
+بيانات Qdrant المحلية.
+
+docker/
+تشغيل MongoDB باستخدام Docker.
+
+
+============================================================
+21. ملخص سريع لكل API
+============================================================
+
+GET /api/v1/
+يرجع اسم وإصدار التطبيق.
+
+POST /api/v1/data/upload/{project_id}
+يرفع ملف ويحفظه على الديسك ويسجله في MongoDB.
+
+POST /api/v1/data/process/{project_id}
+يقرأ الملفات ويقسمها إلى chunks ويحفظ chunks في MongoDB.
+
+POST /api/v1/nlp/index/push/{project_id}
+يحول chunks إلى embeddings ويدخلها في Qdrant.
+
+GET /api/v1/nlp/index/info/{project_id}
+يرجع معلومات collection من Qdrant.
+
+POST /api/v1/nlp/index/search/{project_id}
+يبحث عن أقرب chunks للسؤال.
+
+POST /api/v1/nlp/index/answer/{project_id}
+يبني RAG prompt ويولد إجابة من الموديل.
+
+
+============================================================
+22. الخلاصة
+============================================================
+
+المشروع معمول بطبقات واضحة:
+
+Route يستقبل request.
+Controller ينفذ business logic.
+Model يتعامل مع MongoDB.
+LLM provider يتعامل مع الموديلات.
+VectorDB provider يتعامل مع Qdrant.
+TemplateParser يبني prompts.
+
+التدفق الأساسي:
+
+Upload file
+-> Save asset
+-> Process file into chunks
+-> Store chunks in MongoDB
+-> Embed chunks
+-> Store vectors in Qdrant
+-> Search by query
+-> Build prompt
+-> Generate answer
+
+ده هو قلب أي RAG system مصغر.

@@ -22,11 +22,11 @@ nlp_router = APIRouter(
 async def index_project(request: Request, project_id: str, push_request: PushRequest):
 
     project_model = await ProjectModel.create_instance(
-        db_client=request.app.db_client
+        db_client=request.app.mongo_db
     )
 
     chunk_model = await ChunkModel.create_instance(
-        db_client=request.app.db_client
+        db_client=request.app.mongo_db
     )
 
     project = await project_model.get_project_or_create_one(
@@ -91,7 +91,7 @@ async def index_project(request: Request, project_id: str, push_request: PushReq
 async def get_project_index_info(request: Request, project_id: str):
 
     project_model = await ProjectModel.create_instance(
-        db_client=request.app.db_client
+        db_client=request.app.mongo_db
     )
 
     project = await project_model.get_project_or_create_one(
@@ -117,7 +117,7 @@ async def get_project_index_info(request: Request, project_id: str):
 async def search_index(request: Request, project_id: str, search_request: SearchRequest):
     
     project_model = await ProjectModel.create_instance(
-        db_client=request.app.db_client
+        db_client=request.app.mongo_db
     )
 
     project = await project_model.get_project_or_create_one(
@@ -159,7 +159,7 @@ async def search_index(request: Request, project_id: str, search_request: Search
 async def answer_rag(request: Request, project_id: str, search_request: SearchRequest):
     
     project_model = await ProjectModel.create_instance(
-        db_client=request.app.db_client
+        db_client=request.app.mongo_db
     )
 
     project = await project_model.get_project_or_create_one(

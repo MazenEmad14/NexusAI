@@ -4,7 +4,7 @@ from qdrant_client import models, QdrantClient
 import logging
 from typing import List
 import uuid
-from src.models.db_schemes import RetrievedDocument
+from models.db_schemes import RetrievedDocument
 
 class QdrantDBProvider(VectorDBInterface):
     def __init__(self, db_path: str, distance_method: str):
