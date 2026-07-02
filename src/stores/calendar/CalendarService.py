@@ -30,17 +30,34 @@ class CalendarService:
         self.token_path = token_path or os.path.join(base_dir, "calendar_token.json")
         self.service = None
 
-    def authenticate(self):
+    def authenticate(self, allow_interactive: bool = True):
         """Authenticate with Google Calendar API using OAuth2."""
         creds = None
 
         if os.path.exists(self.token_path):
-            creds = Credentials.from_authorized_user_file(self.token_path, SCOPES)
+            logger.info("Calendar: Token loaded from file.")
+            try:
+                creds = Credentials.from_authorized_user_file(self.token_path, SCOPES)
+            except Exception as e:
+                logger.error(f"Calendar: Failed to load token: {e}")
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
+                logger.info("Calendar: Token expired, attempting to refresh...")
+                try:
+                    from google.auth.transport.requests import Request
+                    creds.refresh(Request())
+                    logger.info("Calendar: Token refreshed successfully.")
+                except Exception as e:
+                    logger.error(f"Calendar: Token refresh failed: {e}. Re-auth required.")
+                    creds = None # Force re-auth
+            
+            if not creds or not creds.valid:
+                if not allow_interactive:
+                    logger.warning("Calendar: Re-auth required, but allow_interactive is False. Returning False.")
+                    return False
+
+                logger.info("Calendar: Re-auth required. Starting local server for OAuth...")
                 if not os.path.exists(self.credentials_path):
                     logger.error(
                         f"credentials.json not found at {self.credentials_path}. "
@@ -48,13 +65,25 @@ class CalendarService:
                     )
                     return False
 
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials_path, SCOPES
-                )
-                creds = flow.run_local_server(port=0, open_browser=False)
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        self.credentials_path, SCOPES
+                    )
+                    creds = flow.run_local_server(
+                        port=0,
+                        prompt='select_account consent',
+                        access_type='offline',
+                        open_browser=False
+                    )
+                except Exception as e:
+                    logger.error(f"Calendar: Authentication failed during local server flow: {e}")
+                    return False
 
-            with open(self.token_path, 'w') as token:
-                token.write(creds.to_json())
+            try:
+                with open(self.token_path, 'w') as token:
+                    token.write(creds.to_json())
+            except Exception as e:
+                logger.error(f"Calendar: Failed to save token: {e}")
 
         self.service = build('calendar', 'v3', credentials=creds)
         logger.info("Google Calendar API authenticated successfully")

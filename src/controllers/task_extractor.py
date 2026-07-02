@@ -11,11 +11,12 @@ class TaskExtractorController:
     def extract_tasks(self, text: str) -> list[dict]:
         """
         Extract tasks and deadlines from summarized emails or text.
-        Returns a list of dicts: [{"description": "task description", "deadline": "YYYY-MM-DD HH:MM" or null}]
+        Returns a list of dicts with description, deadline, and priority.
         """
         system_prompt = """You are a Task Extraction AI.
 Your job is to read the provided text (like email summaries) and extract actionable tasks that the user needs to do.
-For each task, extract the description and the deadline if mentioned.
+For each task, extract the description, deadline if mentioned, and priority.
+Priority must be one of: low, medium, high, critical.
 If no deadline is mentioned, return null for deadline.
 If there are no actionable tasks, return an empty list [].
 
@@ -24,7 +25,8 @@ Example:
 [
   {
     "description": "Submit the Q3 report",
-    "deadline": "2026-06-25 17:00"
+    "deadline": "2026-06-25 17:00",
+    "priority": "high"
   }
 ]
 """

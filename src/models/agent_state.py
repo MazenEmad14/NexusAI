@@ -12,6 +12,7 @@ class AgentState(TypedDict):
     # ---- Classification ----
     request_type: str                   # "retrieval" | "action"
     action_type: str                    # "send_email" | "calendar" | "reminder" | ""
+    priority: str                      # "low" | "medium" | "high" | "critical"
 
     # ---- Retrieval Results ----
     knowledge_results: List[Dict]       # RAG / Vector DB search results

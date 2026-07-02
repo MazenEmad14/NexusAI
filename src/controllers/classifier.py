@@ -45,8 +45,11 @@ Classify the user's query into one of these categories:
 Respond with ONLY a raw, valid JSON object matching this exact schema. DO NOT include any conversational text, explanations, or markdown code blocks:
 {
   "request_type": "retrieval",
-  "action_type": "summary"
+  "action_type": "summary",
+  "priority": "medium"
 }
+
+Also detect query priority as one of: low, medium, high, critical.
 """
 
         messages = [
@@ -77,19 +80,24 @@ Respond with ONLY a raw, valid JSON object matching this exact schema. DO NOT in
             
             # Robust substring matching to handle conversational LLMs
             if "retrieval:summary" in response_text or '"action_type": "summary"' in response_text or '"action_type":"summary"' in response_text:
-                return {"request_type": "retrieval", "action_type": "summary"}
+                priority = self._detect_priority(response_text + " " + query)
+                return {"request_type": "retrieval", "action_type": "summary", "priority": priority}
             elif "action:calendar" in response_text:
-                return {"request_type": "action", "action_type": "calendar"}
+                return {"request_type": "action", "action_type": "calendar", "priority": self._detect_priority(response_text + " " + query)}
             elif "action:send_email" in response_text:
-                return {"request_type": "action", "action_type": "send_email"}
+                return {"request_type": "action", "action_type": "send_email", "priority": self._detect_priority(response_text + " " + query)}
             elif "action:reminder" in response_text:
-                return {"request_type": "action", "action_type": "reminder"}
+                return {"request_type": "action", "action_type": "reminder", "priority": self._detect_priority(response_text + " " + query)}
             else:
-                return {"request_type": "retrieval", "action_type": ""}
+                return {"request_type": "retrieval", "action_type": "", "priority": self._detect_priority(response_text + " " + query)}
 
         except Exception as e:
             logger.error(f"Error in query classification: {e}")
-            return {"request_type": "retrieval", "action_type": ""}
+            return {"request_type": "retrieval", "action_type": "", "priority": self._detect_priority(query)}
+
+    def _detect_priority(self, text: str) -> str:
+        from services.retrieval import detect_priority
+        return detect_priority(text)
 
     def extract_action_details(self, query: str, action_type: str, chat_history: list = None) -> dict:
         """
@@ -130,7 +138,7 @@ If a field is completely unknown or not specified, use null instead of a default
     def _extract_reminder_details(self, query: str, chat_history: list = None) -> dict:
         system_prompt = """Extract reminder details from the user's request. Resolve references from the conversation history.
 Return ONLY a valid JSON object:
-{"task": "what to remember", "date": "YYYY-MM-DD", "notes": "additional notes"}
+{"task": "what to remember", "date": "YYYY-MM-DD", "time": "HH:MM", "priority": "medium", "notes": "additional notes"}
 If date is unclear, leave it as empty string."""
 
         return self._extract_with_llm(query, system_prompt, chat_history)
