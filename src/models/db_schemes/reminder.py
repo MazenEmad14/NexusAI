@@ -8,6 +8,7 @@ class Reminder(BaseModel):
     task: str = Field(..., min_length=1)
     date: str = Field(default="")                  # e.g. "2026-06-23"
     time: str = Field(default="")                  # e.g. "14:00"
+    priority: str = Field(default="medium")        # low | medium | high | critical
     notes: str = Field(default="")
     is_completed: bool = Field(default=False)
     project_id: str = Field(default="default")

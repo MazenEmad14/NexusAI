@@ -37,19 +37,36 @@ class GmailService:
         self.token_path = token_path or os.path.join(base_dir, "token.json")
         self.service = None
 
-    def authenticate(self):
+    def authenticate(self, allow_interactive: bool = True):
         """Authenticate with Gmail API using OAuth2."""
         creds = None
 
         # Load existing token
         if os.path.exists(self.token_path):
-            creds = Credentials.from_authorized_user_file(self.token_path, SCOPES)
+            logger.info("Gmail: Token loaded from file.")
+            try:
+                creds = Credentials.from_authorized_user_file(self.token_path, SCOPES)
+            except Exception as e:
+                logger.error(f"Gmail: Failed to load token: {e}")
 
         # Refresh or get new credentials
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
+                logger.info("Gmail: Token expired, attempting to refresh...")
+                try:
+                    from google.auth.transport.requests import Request
+                    creds.refresh(Request())
+                    logger.info("Gmail: Token refreshed successfully.")
+                except Exception as e:
+                    logger.error(f"Gmail: Token refresh failed: {e}. Re-auth required.")
+                    creds = None # Force re-auth
+            
+            if not creds or not creds.valid:
+                if not allow_interactive:
+                    logger.warning("Gmail: Re-auth required, but allow_interactive is False. Returning False.")
+                    return False
+                
+                logger.info("Gmail: Re-auth required. Starting local server for OAuth...")
                 if not os.path.exists(self.credentials_path):
                     logger.error(
                         f"credentials.json not found at {self.credentials_path}. "
@@ -57,18 +74,38 @@ class GmailService:
                     )
                     return False
 
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials_path, SCOPES
-                )
-                creds = flow.run_local_server(port=0)
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        self.credentials_path, SCOPES
+                    )
+                    creds = flow.run_local_server(
+                        port=0,
+                        prompt='select_account consent',
+                        access_type='offline',
+                        open_browser=False
+                    )
+                except Exception as e:
+                    logger.error(f"Gmail: Authentication failed during local server flow: {e}")
+                    return False
 
             # Save token for next run
-            with open(self.token_path, 'w') as token:
-                token.write(creds.to_json())
+            try:
+                with open(self.token_path, 'w') as token:
+                    token.write(creds.to_json())
+            except Exception as e:
+                logger.error(f"Gmail: Failed to save token: {e}")
 
         self.service = build('gmail', 'v1', credentials=creds)
         logger.info("Gmail API authenticated successfully")
         return True
+
+    def logout_gmail(self):
+        """Logout by deleting the token file and resetting credentials."""
+        if os.path.exists(self.token_path):
+            os.remove(self.token_path)
+            logger.info("Deleted Gmail token.json")
+        self.service = None
+        logger.info("Gmail credentials reset.")
 
     def is_authenticated(self) -> bool:
         """Check if the service is authenticated."""

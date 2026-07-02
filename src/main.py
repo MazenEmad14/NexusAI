@@ -1,8 +1,10 @@
 import sys
 from pathlib import Path
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from routes import base, data , nlp, agent
+from routes import dashboard
 from motor.motor_asyncio import AsyncIOMotorClient
 from helpers.config import get_settings
 from stores.llm.LLMProviderFactory import LLMProviderFactory
@@ -15,8 +17,22 @@ from sqlalchemy.orm import sessionmaker
 from stores.gmail.GmailService import GmailService
 from stores.calendar.CalendarService import CalendarService
 from controllers.agent_graph import build_agent_graph
+from services.notification_engine import NotificationEngine
 
 app = FastAPI()
+
+# ── CORS Middleware ──
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 async def startup_db_client():
@@ -60,14 +76,14 @@ async def startup_db_client():
     # Try to load existing token silently
     if Path(app.gmail_service.token_path).exists():
         try:
-            app.gmail_service.authenticate()
+            app.gmail_service.authenticate(allow_interactive=False)
         except Exception:
             pass
 
     app.calendar_service = CalendarService()
     if Path(app.calendar_service.token_path).exists():
         try:
-            app.calendar_service.authenticate()
+            app.calendar_service.authenticate(allow_interactive=False)
         except Exception:
             pass
 
@@ -82,9 +98,14 @@ async def startup_db_client():
         calendar_service=app.calendar_service
     )
 
+    app.notification_engine = NotificationEngine(app)
+    app.notification_engine.start()
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    if hasattr(app, "notification_engine"):
+        await app.notification_engine.stop()
     app.mongo_conn.close()
     await app.db_engine.dispose()
     app.vectordb_client.disconnect()
@@ -94,4 +115,5 @@ app.include_router(base.base_router)
 app.include_router(data.data_router)
 app.include_router(nlp.nlp_router)
 app.include_router(agent.agent_router)
+app.include_router(dashboard.dashboard_router)
 

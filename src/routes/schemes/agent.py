@@ -17,3 +17,4 @@ class ChatResponse(BaseModel):
 class ResumeRequest(BaseModel):
     thread_id: str
     approve: bool
+    resume_token: Optional[str] = None
