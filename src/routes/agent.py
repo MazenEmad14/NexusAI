@@ -1,12 +1,20 @@
-from fastapi import APIRouter, status, Request
+from fastapi import APIRouter, status, Request, File, UploadFile, Depends
 from fastapi.responses import JSONResponse
 import asyncio
 import logging
 import uuid
+import json
 
-from .schemes.agent import ChatRequest, ChatResponse, ResumeRequest
+from .schemes.agent import ChatRequest, ChatResponse, ResumeRequest, TTSRequest
 from controllers.agent_graph import build_agent_graph, create_initial_state
 from models.enums.ResponseEnums import ResponseSignal
+from fastapi.responses import StreamingResponse
+import io
+import asyncio
+from stores.llm.providers.OpenAIProvider import OpenAIProvider
+from helpers.config import get_settings
+from helpers.event_bus import proactive_messages_queue
+from helpers.auth_utils import get_current_user
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -185,6 +193,7 @@ async def _invoke_agent_graph(agent_graph, input_data, config: dict, thread_id: 
             if _has_real_checkpoint(storage, thread_id):
                 _clear_thread_checkpoints(agent_graph, thread_id)
                 logger.warning(f"Detected corrupted checkpoint during ainvoke for thread {thread_id}; cleared it")
+                logger.error(f"Actual exception during ainvoke: {exc}", exc_info=True)
                 raise ThreadStateLoadError("Session expired or invalid.", code="invalid_thread") from exc
         raise
 
@@ -230,7 +239,7 @@ agent_router = APIRouter(
 
 
 @agent_router.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(request: Request, chat_request: ChatRequest):
+async def chat_endpoint(request: Request, chat_request: ChatRequest, current_user: dict = Depends(get_current_user)):
     """
     Main endpoint for the Secretary AI Agent.
     Takes a natural language query and orchestrates the full LangGraph workflow.
@@ -247,13 +256,14 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
 
         agent_graph = request.app.agent_graph
 
-        config = {"configurable": {"thread_id": chat_request.thread_id}}
+        namespaced_thread = f"{str(current_user['_id'])}_{chat_request.thread_id}"
+        config = {"configurable": {"thread_id": namespaced_thread}}
 
         # Preserve existing chat history if any
         try:
-            state_snapshot = _load_thread_state(agent_graph, config, chat_request.thread_id)
+            state_snapshot = _load_thread_state(agent_graph, config, namespaced_thread)
         except ThreadStateLoadError as exc:
-            logger.warning(f"Failed to load state for thread {chat_request.thread_id}: {exc}")
+            logger.warning(f"Failed to load state for thread {namespaced_thread}: {exc}")
             return ChatResponse(
                 response="Thread checkpoint invalid. Restarting session...",
                 type="error",
@@ -262,18 +272,35 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             )
 
         existing_history = state_snapshot.values.get("chat_history", []) if state_snapshot and state_snapshot.values else []
+        if len(existing_history) > 10:
+            existing_history = existing_history[-10:]
 
         initial_state = create_initial_state(
             query=chat_request.query,
-            project_id=chat_request.project_id
+            project_id=chat_request.project_id,
+            file_path=chat_request.file_path,
+            user_id=str(current_user["_id"])
         )
         initial_state["chat_history"] = existing_history
         if existing_history and state_snapshot and state_snapshot.values:
             metadata = dict(state_snapshot.values.get("metadata", {}) or {})
             initial_state["metadata"] = metadata
 
-        logger.info(f"Starting agent workflow for query: {chat_request.query} [Thread: {chat_request.thread_id}]")
-        final_state = await _invoke_agent_graph(agent_graph, initial_state, config, chat_request.thread_id)
+        logger.info(f"Starting agent workflow for query: {chat_request.query} [Thread: {namespaced_thread}]")
+        def find_objectid(obj, path=""):
+            from bson.objectid import ObjectId
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    find_objectid(v, path + f".{k}")
+            elif isinstance(obj, list):
+                for i, v in enumerate(obj):
+                    find_objectid(v, path + f"[{i}]")
+            elif isinstance(obj, ObjectId):
+                print(f"FOUND OBJECTID AT {path} !!!")
+
+        find_objectid(initial_state, "initial_state")
+
+        final_state = await _invoke_agent_graph(agent_graph, initial_state, config, namespaced_thread)
 
         # Check if the graph is paused for human-in-the-loop approval
         try:
@@ -320,7 +347,8 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             metadata=final_state.get("metadata", {}),
             status=final_state.get("status", "success"),
             thread_id=chat_request.thread_id,
-            action_details={}
+            action_details={},
+            chart_data=final_state.get("chart_data")
         )
 
     except ThreadStateLoadError as exc:
@@ -342,20 +370,21 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         )
 
 @agent_router.post("/resume", response_model=ChatResponse)
-async def resume_endpoint(request: Request, resume_request: ResumeRequest):
+async def resume_endpoint(request: Request, resume_request: ResumeRequest, current_user: dict = Depends(get_current_user)):
     """
     Endpoint to resume or cancel an interrupted graph execution (HITL Approval).
     """
     try:
         agent_graph = request.app.agent_graph
-        config = {"configurable": {"thread_id": resume_request.thread_id}}
-        lock = _get_resume_lock(resume_request.thread_id)
+        namespaced_thread = f"{str(current_user['_id'])}_{resume_request.thread_id}"
+        config = {"configurable": {"thread_id": namespaced_thread}}
+        lock = _get_resume_lock(namespaced_thread)
 
         async with lock:
             try:
-                state_snapshot = _load_thread_state(agent_graph, config, resume_request.thread_id, require_existing=True)
+                state_snapshot = _load_thread_state(agent_graph, config, namespaced_thread, require_existing=True)
             except ThreadStateLoadError as exc:
-                logger.warning(f"Failed to load state for resume on thread {resume_request.thread_id}: {exc}")
+                logger.warning(f"Failed to load state for resume on thread {namespaced_thread}: {exc}")
                 return JSONResponse(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     content={
@@ -365,7 +394,7 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest):
                 )
 
             try:
-                state_snapshot = _validate_resume_state(state_snapshot, resume_request.thread_id, resume_request.resume_token)
+                state_snapshot = _validate_resume_state(state_snapshot, namespaced_thread, resume_request.resume_token)
             except ThreadStateLoadError as exc:
                 if exc.code == "cancelled":
                     return JSONResponse(
@@ -429,7 +458,7 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest):
                     raise
 
                 # We must resume the graph so it can finish (e.g. format_output_node)
-                final_state = await _invoke_agent_graph(agent_graph, None, config, resume_request.thread_id)
+                final_state = await _invoke_agent_graph(agent_graph, None, config, namespaced_thread)
 
                 return ChatResponse(
                     response="Action was cancelled by the user.",
@@ -439,8 +468,8 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest):
                 )
 
             # User approved, resume graph execution
-            logger.info(f"Resuming graph execution for thread {resume_request.thread_id}")
-            final_state = await _invoke_agent_graph(agent_graph, None, config, resume_request.thread_id)
+            logger.info(f"Resuming graph for thread {namespaced_thread} with approval: {resume_request.approve}")
+            final_state = await _invoke_agent_graph(agent_graph, None, config, namespaced_thread)
 
         response_type = final_state.get("request_type", "")
         if final_state.get("action_type"):
@@ -452,7 +481,8 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest):
             metadata=final_state.get("metadata", {}),
             status=final_state.get("status", "success"),
             thread_id=resume_request.thread_id,
-            action_details={}
+            action_details={},
+            chart_data=final_state.get("chart_data")
         )
 
     except ThreadStateLoadError as exc:
@@ -473,3 +503,168 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest):
                 "error": "Session expired or invalid."
             }
         )
+
+import tempfile
+import os
+from gtts import gTTS
+import whisper
+import os
+
+try:
+    import imageio_ffmpeg
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg_exe)
+except ImportError:
+    pass
+
+# Ensure venv Scripts is in PATH for whisper to find ffmpeg.exe
+os.environ["PATH"] += os.pathsep + r"E:\DEPI\Project\venv\Scripts"
+
+whisper_model = None
+try:
+    whisper_model = whisper.load_model("base")
+except Exception as e:
+    logger.error(f"Failed to load whisper model: {e}")
+
+@agent_router.post("/stt")
+async def stt_endpoint(request: Request, file: UploadFile = File(...)):
+    """
+    Endpoint to convert speech to text using local Whisper.
+    """
+    if whisper_model is None:
+        return JSONResponse(status_code=500, content={"error": "Whisper model not loaded"})
+    
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+            
+        result = whisper_model.transcribe(tmp_path)
+        os.remove(tmp_path)
+        
+        return {"text": result["text"]}
+    except Exception as e:
+        logger.error(f"Error in STT endpoint: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@agent_router.post("/tts")
+async def tts_endpoint(request: Request, tts_request: TTSRequest):
+    """
+    Endpoint to convert text to speech using local gTTS.
+    """
+    try:
+        tts = gTTS(text=tts_request.text, lang='en')
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        return StreamingResponse(fp, media_type="audio/mpeg")
+    except Exception as e:
+        logger.error(f"Error in TTS endpoint: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": str(e)}
+        )
+
+@agent_router.get("/notifications")
+async def notifications_endpoint(request: Request):
+    """
+    SSE endpoint for proactive agent notifications.
+    """
+    async def event_generator():
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                message = await asyncio.wait_for(proactive_messages_queue.get(), timeout=2.0)
+                yield f"data: {message}\n\n"
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.error(f"Error in SSE generator: {e}")
+                break
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@agent_router.post("/chat/stream")
+async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Streaming endpoint for the Secretary AI Agent using LangGraph astream_events.
+    """
+    if not hasattr(request.app, "agent_graph"):
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "Agent graph not initialized"}
+        )
+
+    agent_graph = request.app.agent_graph
+    namespaced_thread = f"{str(current_user['_id'])}_{chat_request.thread_id}"
+    config = {"configurable": {"thread_id": namespaced_thread}}
+
+    try:
+        state_snapshot = _load_thread_state(agent_graph, config, namespaced_thread)
+    except ThreadStateLoadError as exc:
+        logger.warning(f"Failed to load state for thread {namespaced_thread}: {exc}")
+        async def error_stream():
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Thread checkpoint invalid'})}\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(error_stream(), media_type="text/event-stream")
+
+    existing_history = state_snapshot.values.get("chat_history", []) if state_snapshot and state_snapshot.values else []
+    if len(existing_history) > 10:
+        existing_history = existing_history[-10:]
+
+    initial_state = create_initial_state(
+        query=chat_request.query,
+        project_id=chat_request.project_id,
+        file_path=chat_request.file_path,
+        user_id=str(current_user["_id"])
+    )
+    initial_state["chat_history"] = existing_history
+    if existing_history and state_snapshot and state_snapshot.values:
+        metadata = dict(state_snapshot.values.get("metadata", {}) or {})
+        initial_state["metadata"] = metadata
+
+    async def stream_graph_execution():
+        try:
+            async for event in agent_graph.astream_events(initial_state, config, version="v2"):
+                if event["event"] == "on_chat_model_stream":
+                    chunk = event["data"].get("chunk")
+                    if chunk and hasattr(chunk, "content"):
+                        token = chunk.content
+                        if token:
+                            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+            # Execution finished or interrupted
+            state = agent_graph.get_state(config)
+            
+            if state and state.next:
+                # HITL interrupt
+                final_vals = state.values
+                action_type = final_vals.get("action_type", "")
+                action_details = final_vals.get("action_details", {})
+                metadata = dict(final_vals.get("metadata", {}) or {})
+                if not metadata.get("resume_token"):
+                    token = uuid.uuid4().hex
+                    metadata["resume_token"] = token
+                    _pending_resume_tokens[namespaced_thread] = token
+                    agent_graph.update_state(config, {"metadata": metadata})
+
+                yield f"data: {json.dumps({'type': 'pending_action', 'action_type': action_type, 'action_details': action_details, 'metadata': metadata})}\n\n"
+            else:
+                final_vals = state.values if state else {}
+                metadata = final_vals.get("metadata", {})
+                chart_data = final_vals.get("chart_data", None)
+                result_text = final_vals.get("result", "")
+                
+                if result_text:
+                    yield f"data: {json.dumps({'type': 'token', 'content': result_text})}\n\n"
+                    
+                yield f"data: {json.dumps({'type': 'metadata', 'metadata': metadata, 'chart_data': chart_data, 'status': final_vals.get('status'), 'action_type': final_vals.get('action_type'), 'request_type': final_vals.get('request_type')})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Error in stream_graph_execution: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Error during execution'})}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream_graph_execution(), media_type="text/event-stream")

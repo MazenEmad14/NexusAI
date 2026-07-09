@@ -4,6 +4,7 @@ from datetime import datetime
 
 class Task(BaseModel):
     task_id: str = Field(alias="_id", default="")
+    user_id: str = Field(default="")
     project_id: str = Field(default="default")
     description: str = Field(...)
     deadline: Optional[datetime] = Field(default=None)

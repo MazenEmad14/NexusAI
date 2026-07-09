@@ -68,24 +68,7 @@ class NLPController(BaseController):
 
         return True
 
-    def search_vector_db_collection(self, project: Project, text: str, limit: int = 5):
-        collection_name = self.create_collection_name(project_id=project.project_id)
 
-        vector = self.embedding_client.embed_text(
-            text=text,
-            document_type=DocumentTypeEnum.QUERY.value
-        )
-
-        if not vector:
-            logger.error("Error while embedding search query")
-            return None
-
-        return self.vectordb_client.search_by_vector(
-            collection_name=collection_name,
-            vector=vector,
-            limit=limit
-        )
-    
     def search_vector_db_collection(self, project: Project, text: str, limit: int = 10):
 
         # step1: get collection name
@@ -127,7 +110,7 @@ class NLPController(BaseController):
         # step2: Construct LLM prompt
         system_prompt = self.template_parser.get("rag", "system_prompt")
 
-        documents_prompts = "\\n\\n---\\n\\n".join([
+        documents_prompts = "\n\n---\n\n".join([
             self.template_parser.get("rag", "document_prompt", {
                     "doc_num": idx + 1,
                     "chunk_text": doc.text,
@@ -135,8 +118,7 @@ class NLPController(BaseController):
             for idx, doc in enumerate(retrieved_documents)
         ])
 
-        print(f"Retrieved Chunks:\\n{documents_prompts}")
-        logger.info(f"Retrieved Chunks:\\n{documents_prompts}")
+        logger.info(f"Retrieved Chunks:\n{documents_prompts}")
 
         footer_prompt = self.template_parser.get("rag", "footer_prompt", {
             "context": documents_prompts,
@@ -158,7 +140,7 @@ class NLPController(BaseController):
 
         full_prompt = footer_prompt
 
-        print(f"\\n========== FINAL LLM PROMPT ==========\\n{full_prompt}\\n======================================\\n")
+        logger.info(f"\n========== FINAL LLM PROMPT ==========\n{full_prompt}\n======================================\n")
 
         # step4: Retrieve the Answer
         answer = self.generation_client.generate_text(

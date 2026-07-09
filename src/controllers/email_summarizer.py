@@ -29,10 +29,21 @@ class EmailSummarizerController(BaseController):
     def summarize_single_email(self, email: dict) -> dict:
         """Summarize a single email using LLM."""
 
-        system_prompt = """You are an email summarizer. Given an email, provide a brief summary.
-Return ONLY a JSON object with these fields:
-{"sender": "who sent it", "subject": "email subject", "date": "when", "summary": "2-3 sentence summary of the key points", "action_items": ["any action items mentioned"]}"""
+        system_prompt = """You are an email summarizer. You will be given an email's metadata and body text.
 
+Return ONLY a valid JSON object, no markdown, no code fences, no explanation:
+{
+  "summary": "2-3 sentence summary of the key points, in the same language as the email body",
+  "action_items": ["list of concrete action items explicitly mentioned or clearly implied"],
+  "urgency": "high | medium | low"
+}
+
+Rules:
+- summary: concise, factual, no repeating the subject line verbatim, no filler phrases like "this email is about".
+- action_items: return an empty list [] if there are none. Do not invent action items that aren't in the email.
+- urgency: "high" if the email mentions deadlines, urgent requests, or time-sensitive matters; "medium" for normal business requests; "low" for FYI/newsletters/no action needed.
+- If the body is empty or says "No content", return: {"summary": "لا يوجد محتوى لتلخيصه", "action_items": [], "urgency": "low"} (or the English equivalent if other fields are in English).
+"""
         email_text = f"""
 From: {email.get('sender', 'Unknown')}
 Subject: {email.get('subject', 'No Subject')}
@@ -72,7 +83,11 @@ Date: {email.get('date', 'Unknown')}
                 response_text = response_text.rsplit("```", 1)[0]
             response_text = response_text.strip()
 
-            return json.loads(response_text)
+            parsed_data = json.loads(response_text)
+            parsed_data["sender"] = email.get('sender', 'Unknown')
+            parsed_data["subject"] = email.get('subject', 'No Subject')
+            parsed_data["date"] = email.get('date', '')
+            return parsed_data
 
         except Exception as e:
             logger.error(f"Error summarizing email: {e}")

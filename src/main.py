@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from routes import base, data , nlp, agent
+from routes import base, data , nlp, agent, auth
 from routes import dashboard
 from motor.motor_asyncio import AsyncIOMotorClient
 from helpers.config import get_settings
@@ -18,6 +18,8 @@ from stores.gmail.GmailService import GmailService
 from stores.calendar.CalendarService import CalendarService
 from controllers.agent_graph import build_agent_graph
 from services.notification_engine import NotificationEngine
+from controllers.proactive_agent import evaluate_inbox_and_notify
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 app = FastAPI()
 
@@ -101,9 +103,16 @@ async def startup_db_client():
     app.notification_engine = NotificationEngine(app)
     app.notification_engine.start()
 
+    # 9. Proactive Agent Scheduler
+    app.scheduler = AsyncIOScheduler()
+    app.scheduler.add_job(evaluate_inbox_and_notify, 'interval', minutes=1, args=[app])
+    app.scheduler.start()
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    if hasattr(app, "scheduler"):
+        app.scheduler.shutdown()
     if hasattr(app, "notification_engine"):
         await app.notification_engine.stop()
     app.mongo_conn.close()
@@ -111,9 +120,11 @@ async def shutdown_db_client():
     app.vectordb_client.disconnect()
 
 
+from routes.local_auth import local_auth_router
 app.include_router(base.base_router)
+app.include_router(auth.auth_router)
+app.include_router(local_auth_router)
 app.include_router(data.data_router)
 app.include_router(nlp.nlp_router)
 app.include_router(agent.agent_router)
 app.include_router(dashboard.dashboard_router)
-

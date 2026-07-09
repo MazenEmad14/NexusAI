@@ -10,6 +10,7 @@ class Query(BaseModel):
     action_type: str = Field(default="")           # "send_email" | "calendar" | "reminder"
     status: str = Field(default="pending")         # "pending" | "processing" | "success" | "error"
     response: str = Field(default="")
+    user_id: str = Field(default="")
     project_id: str = Field(default="default")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

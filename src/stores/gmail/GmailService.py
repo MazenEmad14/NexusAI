@@ -1,14 +1,15 @@
 import os
 import base64
 import logging
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import List, Dict, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from helpers.exceptions import GoogleAuthRequiredException
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -36,6 +37,7 @@ class GmailService:
         self.credentials_path = credentials_path or os.path.join(base_dir, "credentials.json")
         self.token_path = token_path or os.path.join(base_dir, "token.json")
         self.service = None
+        self.lock = threading.Lock()
 
     def authenticate(self, allow_interactive: bool = True):
         """Authenticate with Gmail API using OAuth2."""
@@ -62,31 +64,8 @@ class GmailService:
                     creds = None # Force re-auth
             
             if not creds or not creds.valid:
-                if not allow_interactive:
-                    logger.warning("Gmail: Re-auth required, but allow_interactive is False. Returning False.")
-                    return False
-                
-                logger.info("Gmail: Re-auth required. Starting local server for OAuth...")
-                if not os.path.exists(self.credentials_path):
-                    logger.error(
-                        f"credentials.json not found at {self.credentials_path}. "
-                        "Please download it from Google Cloud Console."
-                    )
-                    return False
-
-                try:
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        self.credentials_path, SCOPES
-                    )
-                    creds = flow.run_local_server(
-                        port=0,
-                        prompt='select_account consent',
-                        access_type='offline',
-                        open_browser=False
-                    )
-                except Exception as e:
-                    logger.error(f"Gmail: Authentication failed during local server flow: {e}")
-                    return False
+                logger.warning("Gmail: Re-auth required, raising GoogleAuthRequiredException.")
+                raise GoogleAuthRequiredException("Please connect your Google account from the Integrations panel to perform this action.")
 
             # Save token for next run
             try:
@@ -121,9 +100,10 @@ class GmailService:
             return []
 
         try:
-            results = self.service.users().messages().list(
-                userId='me', q=query, maxResults=max_results
-            ).execute()
+            with self.lock:
+                results = self.service.users().messages().list(
+                    userId='me', q=query, maxResults=max_results
+                ).execute()
 
             messages = results.get('messages', [])
             if not messages:
@@ -147,9 +127,10 @@ class GmailService:
             return None
 
         try:
-            message = self.service.users().messages().get(
-                userId='me', id=message_id, format='full'
-            ).execute()
+            with self.lock:
+                message = self.service.users().messages().get(
+                    userId='me', id=message_id, format='full'
+                ).execute()
 
             return self._parse_email(message)
 
@@ -164,35 +145,38 @@ class GmailService:
             logger.error("Gmail service not authenticated")
             return None
 
-        try:
-            if html:
-                message = MIMEMultipart('alternative')
-                message.attach(MIMEText(body, 'html'))
-            else:
-                message = MIMEText(body)
+        for attempt in range(3):
+            try:
+                if html:
+                    message = MIMEMultipart('alternative')
+                    message.attach(MIMEText(body, 'html'))
+                else:
+                    message = MIMEText(body)
 
-            message['to'] = to
-            message['subject'] = subject
+                message['to'] = to
+                message['subject'] = subject
 
-            raw_message = base64.urlsafe_b64encode(
-                message.as_bytes()
-            ).decode('utf-8')
+                raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
-            sent = self.service.users().messages().send(
-                userId='me', body={'raw': raw_message}
-            ).execute()
+                with self.lock:
+                    sent_message = self.service.users().messages().send(
+                        userId='me', body={'raw': raw}
+                    ).execute()
 
-            logger.info(f"Email sent successfully. Message ID: {sent['id']}")
-            return {
-                "message_id": sent['id'],
-                "to": to,
-                "subject": subject,
-                "status": "sent"
-            }
+                logger.info(f"Email sent successfully. Message ID: {sent_message['id']}")
+                return {
+                    "message_id": sent_message['id'],
+                    "to": to,
+                    "subject": subject,
+                    "status": "sent"
+                }
 
-        except Exception as e:
-            logger.error(f"Error sending email: {e}")
-            return None
+            except Exception as e:
+                logger.error(f"Error sending email (attempt {attempt+1}): {e}")
+                import time
+                time.sleep(1)
+        
+        return None
 
     def _parse_email(self, message: dict) -> Dict:
         """Parse a raw Gmail message into a clean dictionary."""

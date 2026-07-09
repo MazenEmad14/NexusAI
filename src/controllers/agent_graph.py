@@ -17,10 +17,14 @@ from controllers.classifier import ClassifierController
 from controllers.email_summarizer import EmailSummarizerController
 from controllers.formatter import ResponseFormatter
 from controllers.NLPController import NLPController
+from controllers.data_analysis_node import data_analysis_node
+from controllers.web_search_node import web_search_node
+from controllers.conversational_node import conversational_node
 from models.agent_state import AgentState
-from models.db_schemes import Query, Email, Meeting, Reminder
+from models.db_schemes import Query,Reminder
 from services.daily_summary import DailySummaryService
 from services.retrieval import detect_priority, rerank_results
+from helpers.exceptions import GoogleAuthRequiredException
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -38,6 +42,8 @@ def _append_chat_turn(state: AgentState, role: str, content: str) -> None:
     if history and history[-1].get("role") == role and history[-1].get("content") == content:
         return
     history.append({"role": role, "content": content})
+    if len(history) > 10:
+        history = history[-10:]
     state["chat_history"] = history
 
 
@@ -129,14 +135,33 @@ async def search_knowledge_base_node(state: AgentState, **kwargs) -> AgentState:
         return []
 
     async def _gmail_search() -> list:
-        if not (gmail_service and gmail_service.is_authenticated()):
+        if not gmail_service:
+            return []
+        try:
+            if not gmail_service or not gmail_service.is_authenticated():
+                gmail_service.authenticate(allow_interactive=False)
+        except GoogleAuthRequiredException:
             return []
         try:
             gmail_query = state["query"]
             if generation_client:
                 prompt = f"""Convert the user's natural language query into a Gmail search operator string.
-Return ONLY the raw search string, nothing else.
-Examples: "emails from ahmed" -> "from:ahmed", "unread emails about project X" -> "is:unread project X"
+Return ONLY the raw search string — no explanation, no quotes, no markdown.
+
+Rules:
+- If the user asks for "the latest email(s)" or a specific count of recent emails (e.g. "last 5 mails", "اخر 3 رسايل") with no other filter, return an empty string "". The system handles the limit automatically.
+- If the user mentions a specific relative time range, use newer_than / older_than together to bound it precisely, not just newer_than alone.
+- If unsure or the query has no clear Gmail-searchable filter, return "" rather than guessing.
+
+Examples:
+- "emails from ahmed" -> "from:ahmed"
+- "unread emails about project X" -> "is:unread project X"
+- "give me the head and content of the last 5 mails" -> ""
+- "ما هو اخر ايميل" -> ""
+- "ايميلات امبارح" -> "newer_than:2d older_than:1d"
+- "ايميلات النهاردة" -> "newer_than:1d"
+- "رسايل فيها مرفقات من شركة جوجل" -> "has:attachment from:google"
+
 User Query: "{state['query']}"
 """
                 try:
@@ -147,7 +172,7 @@ User Query: "{state['query']}"
                         max_output_tokens=50,
                         temperature=0.0
                     )
-                    if response:
+                    if response is not None:
                         gmail_query = response.strip().strip("'\"").strip("`")
                         logger.info(f"Generated Gmail Query: {gmail_query}")
                 except Exception as e:
@@ -160,7 +185,7 @@ User Query: "{state['query']}"
             )
             logger.info(f"Gmail search returned {len(emails) if emails else 0} emails.")
             return [{
-                "text": f"{email.get('subject', 'No subject')}\n{email.get('snippet', '')}",
+                "text": f"Subject: {email.get('subject', 'No subject')}\nBody: {email.get('body', email.get('snippet', ''))[:2000]}",
                 "score": 0.95,
                 "source": "gmail",
                 "source_confidence": 1.0,
@@ -178,7 +203,7 @@ User Query: "{state['query']}"
         try:
             from models.TaskModel import TaskModel
             task_model = await TaskModel.create_instance(db_client)
-            tasks = await task_model.search_tasks(state.get("project_id", "default"), state["query"], limit=3)
+            tasks = await task_model.search_tasks(state.get("project_id", "default"), state.get("user_id", ""), state["query"], limit=3)
             return [{
                 "text": f"Task: {task.description} (deadline: {task.deadline or 'None'}, priority: {getattr(task, 'priority', 'medium')})",
                 "score": 0.9,
@@ -193,7 +218,12 @@ User Query: "{state['query']}"
         return []
 
     async def _calendar_search() -> list:
-        if not (calendar_service and calendar_service.is_authenticated()):
+        if not calendar_service:
+            return []
+        try:
+            if not calendar_service or not calendar_service.is_authenticated():
+                calendar_service.authenticate(allow_interactive=False)
+        except GoogleAuthRequiredException:
             return []
         try:
             events = await asyncio.to_thread(
@@ -219,7 +249,7 @@ User Query: "{state['query']}"
         try:
             from models.ReminderModel import ReminderModel
             reminder_model = await ReminderModel.create_instance(db_client)
-            reminders = await reminder_model.get_active_reminders(state.get("project_id", "default"), limit=3)
+            reminders = await reminder_model.get_active_reminders(state.get("project_id", "default"), state.get("user_id", ""), limit=3)
             return [{
                 "text": f"Reminder: {reminder.task} on {reminder.date} {reminder.time}",
                 "score": 0.85,
@@ -251,9 +281,14 @@ User Query: "{state['query']}"
 
         answer = ""
         if generation_client:
-            context_text = "\n\n".join([item.get("text", "") for item in ranked_results[:5]])
+            context_text = "\n\n".join([item.get("text", "") for item in ranked_results[:7]])
             try:
-                enhanced_prompt = f"You are a Secretary AI. The following context contains the user's real emails and data retrieved from their account. Use this context to answer the user's query directly and accurately. DO NOT say you cannot access emails, because the context ALREADY contains the emails you need.\n\nContext:\n{context_text}\n\nUser Query: {state['query']}"
+                enhanced_prompt =f"""You are a strict data extraction AI. Answer the user's query ONLY using the provided context blocks. If the provided context blocks are empty, OR if they do not contain the exact answer to the user's query, you MUST NOT apologize, guess, or explain. You must output EXACTLY and ONLY this string: __NO_RELEVANT_CONTEXT__.
+
+Context:
+{context_text}
+
+User Query: {state['query']}"""
                 answer = generation_client.generate_text(
                     prompt=enhanced_prompt,
                     chat_history=state.get("chat_history", []),
@@ -266,10 +301,16 @@ User Query: "{state['query']}"
         if not answer:
             answer = ranked_results[0].get("text", "")
 
-        state["result"] = ResponseFormatter.format_retrieval_answer(answer, source="multi_source")
-        state["status"] = "success"
-        state["metadata"]["source"] = "multi_source"
-        state["metadata"]["priority"] = state.get("priority", detect_priority(state["query"]))
+        response_text = answer.strip()
+        if "__NO_RELEVANT_CONTEXT__" in response_text or len(ranked_results) == 0:
+            state["status"] = "no_results"
+            state["result"] = "" # Clear the hallucinated text
+            state["metadata"]["source"] = "none"
+        else:
+            state["result"] = ResponseFormatter.format_retrieval_answer(response_text, source="multi_source")
+            state["status"] = "success"
+            state["metadata"]["source"] = "multi_source"
+            state["metadata"]["priority"] = state.get("priority", detect_priority(state["query"]))
     else:
         state["knowledge_results"] = []
         state["emails"] = []
@@ -288,17 +329,36 @@ async def search_gmail_node(state: AgentState, **kwargs) -> AgentState:
 
     logger.info("Searching Gmail for fallback...")
 
-    if not gmail_service.is_authenticated():
-        success = gmail_service.authenticate()
-        if not success:
-            state["result"] = ResponseFormatter.format_error("Gmail service not configured")
+    if not gmail_service or not gmail_service.is_authenticated():
+        try:
+            success = gmail_service.authenticate()
+            if not success:
+                state["result"] = ResponseFormatter.format_error("Gmail service not configured")
+                state["status"] = "error"
+                return state
+        except GoogleAuthRequiredException:
+            state["result"] = "Please connect your Google account from the Integrations panel to perform this action."
             state["status"] = "error"
             return state
 
     # Create a simple search query from the user's input
     prompt = f"""Convert the user's natural language query into a Gmail search operator string.
-Return ONLY the raw search string, nothing else.
-Examples: "emails from ahmed" -> "from:ahmed", "unread emails about project X" -> "is:unread project X"
+Return ONLY the raw search string — no explanation, no quotes, no markdown.
+
+Rules:
+- If the user asks for "the latest email(s)" or a specific count of recent emails (e.g. "last 5 mails", "اخر 3 رسايل") with no other filter, return an empty string "". The system handles the limit automatically.
+- If the user mentions a specific relative time range, use newer_than / older_than together to bound it precisely, not just newer_than alone.
+- If unsure or the query has no clear Gmail-searchable filter, return "" rather than guessing.
+
+Examples:
+- "emails from ahmed" -> "from:ahmed"
+- "unread emails about project X" -> "is:unread project X"
+- "give me the head and content of the last 5 mails" -> ""
+- "ما هو اخر ايميل" -> ""
+- "ايميلات امبارح" -> "newer_than:2d older_than:1d"
+- "ايميلات النهاردة" -> "newer_than:1d"
+- "رسايل فيها مرفقات من شركة جوجل" -> "has:attachment from:google"
+
 User Query: "{state['query']}"
 """
     
@@ -310,7 +370,7 @@ User Query: "{state['query']}"
             max_output_tokens=50,
             temperature=0.0
         )
-        if response:
+        if response is not None:
             gmail_query = response.strip().strip("'\"").strip("`")
             logger.info(f"Converted query to Gmail format: '{gmail_query}'")
 
@@ -345,6 +405,7 @@ User Query: "{state['query']}"
                 for task_data in extracted_tasks:
                     task = Task(
                         project_id=state.get("project_id", "default"),
+                        user_id=state.get("user_id", ""),
                         description=task_data.get("description", ""),
                         priority=task_data.get("priority", state.get("priority", "medium")),
                     )
@@ -364,6 +425,7 @@ User Query: "{state['query']}"
                     if task.deadline:
                         rem = Reminder(
                             project_id=state.get("project_id", "default"),
+                            user_id=state.get("user_id", ""),
                             task=f"Deadline: {task.description}",
                             date=deadline_str,
                             priority=task.priority,
@@ -410,10 +472,20 @@ def send_email_node(state: AgentState, **kwargs) -> AgentState:
     gmail_service = kwargs.get("gmail_service")
     details = state.get("action_details", {})
 
+    if not gmail_service:
+        state["result"] = ResponseFormatter.format_error("Gmail service not configured")
+        state["status"] = "error"
+        return state
+
     if not gmail_service.is_authenticated():
-        success = gmail_service.authenticate()
-        if not success:
-            state["result"] = ResponseFormatter.format_error("Gmail service not configured")
+        try:
+            success = gmail_service.authenticate()
+            if not success:
+                state["result"] = ResponseFormatter.format_error("Gmail service not configured")
+                state["status"] = "error"
+                return state
+        except GoogleAuthRequiredException:
+            state["result"] = "Please connect your Google account from the Integrations panel to perform this action."
             state["status"] = "error"
             return state
 
@@ -440,10 +512,20 @@ def create_calendar_event_node(state: AgentState, **kwargs) -> AgentState:
     calendar_service = kwargs.get("calendar_service")
     details = state.get("action_details", {})
 
+    if not calendar_service:
+        state["result"] = ResponseFormatter.format_error("Calendar service not configured")
+        state["status"] = "error"
+        return state
+
     if not calendar_service.is_authenticated():
-        success = calendar_service.authenticate()
-        if not success:
-            state["result"] = ResponseFormatter.format_error("Calendar service not configured")
+        try:
+            success = calendar_service.authenticate()
+            if not success:
+                state["result"] = ResponseFormatter.format_error("Calendar service not configured")
+                state["status"] = "error"
+                return state
+        except GoogleAuthRequiredException:
+            state["result"] = "Please connect your Google account from the Integrations panel to perform this action."
             state["status"] = "error"
             return state
 
@@ -480,7 +562,8 @@ async def save_reminder_node(state: AgentState, **kwargs) -> AgentState:
             time=details.get("time", ""),
             priority=details.get("priority", state.get("priority", "medium")),
             notes=details.get("notes", ""),
-            project_id=state.get("project_id", "default")
+            project_id=state.get("project_id", "default"),
+            user_id=state.get("user_id", "")
         )
         await reminder_model.create_reminder(reminder=reminder)
 
@@ -506,6 +589,7 @@ async def daily_summary_node(state: AgentState, **kwargs) -> AgentState:
     )
     summary_payload = await summary_service.generate(
         project_id=state.get("project_id", "default"),
+        user_id=state.get("user_id", ""),
         chat_history=state.get("chat_history", []),
     )
 
@@ -527,7 +611,13 @@ def format_output_node(state: AgentState, **kwargs) -> AgentState:
         state["result"] = ResponseFormatter.format_no_results()
         state["status"] = "no_results"
 
-    _append_chat_turn(state, "assistant", state["result"])
+    content_for_history = state["result"]
+    chart_data = state.get("chart_data")
+    if chart_data:
+        import json
+        content_for_history += f"\n[Chart Data]: {json.dumps(chart_data)}"
+
+    _append_chat_turn(state, "assistant", content_for_history)
 
     return state
 
@@ -548,9 +638,9 @@ def send_report_email_node(state: AgentState, **kwargs) -> AgentState:
                 return state
         
         safe_query = state['query'].replace('\n', ' ').replace('\r', '')
-        subject = f"Secretary AI Report: {safe_query[:50]}..."
+        subject = f"Aria Report: {safe_query[:50]}..."
         body = (
-            f"<h2>Secretary AI Execution Report</h2>"
+            f"<h2>Aria Execution Report</h2>"
             f"<p><b>Query:</b> {state['query']}</p>"
             f"<p><b>Status:</b> {state.get('status', 'unknown')}</p>"
             f"<p><b>Source:</b> {state.get('metadata', {}).get('source', 'unknown')}</p>"
@@ -586,14 +676,39 @@ def send_report_email_node(state: AgentState, **kwargs) -> AgentState:
 
 def route_request_type(state: AgentState) -> str:
     """Route based on request type classification."""
-    if state["request_type"] == "action":
-        return "extract_action_details"
-    
-    # If action_type is summary, route to daily_summary_node
-    if state["action_type"] == "summary":
+    req = state.get("request_type", "")
+    act = state.get("action_type", "")
+
+    logger.info(f"[Router] request_type='{req}' action_type='{act}'")
+
+    if req == "conversational":
+        logger.info("[Router] → conversational_node")
+        return "conversational_node"
+
+    if req == "web_search":
+        logger.info("[Router] → web_search")
+        return "web_search"
+
+    # action_type shortcuts — checked before generic "action" branch
+    if act == "data_analysis":
+        logger.info("[Router] → data_analysis")
+        return "data_analysis"
+
+    if act == "summary":
+        logger.info("[Router] → daily_summary")
         return "daily_summary"
 
-    # Default to KB
+    if act == "gmail":
+        logger.info("[Router] → search_gmail")
+        return "search_gmail"
+
+    if req == "action":
+        # send_email / calendar / reminder are handled inside route_action_type
+        logger.info("[Router] → extract_action_details")
+        return "extract_action_details"
+
+    # Default: KB retrieval (covers request_type="retrieval" and any unknown value)
+    logger.info("[Router] → search_knowledge_base (default)")
     return "search_knowledge_base"
 
 
@@ -604,6 +719,17 @@ def route_kb_results(state: AgentState) -> str:
     return "search_gmail"
 
 
+def route_gmail_results(state: AgentState) -> str:
+    """Route based on Gmail search results — if found, go to format; else fallback to web_search."""
+    if state.get("emails") and len(state["emails"]) > 0 and state.get("status") == "success":
+        return "format_output"
+        
+    # If the user explicitly asked to read their emails, don't fall back to web search if empty!
+    if state.get("action_type") == "gmail":
+        return "format_output"
+        
+    return "web_search"
+
 def route_action_type(state: AgentState) -> str:
     """Route to the correct action handler."""
     action_type = state.get("action_type", "")
@@ -613,7 +739,14 @@ def route_action_type(state: AgentState) -> str:
         return "create_calendar_event"
     elif action_type == "reminder":
         return "save_reminder"
-    return "format_output"
+    elif action_type == "data_analysis":
+        return "data_analysis"
+    elif action_type == "gmail":
+        return "search_gmail"
+        
+    # If it's an action but the type is empty or unrecognized, don't just format output and fail.
+    # Fallback to the search cascade so it can attempt to find information.
+    return "search_knowledge_base"
 
 
 # ─────────────────────────────────────────────
@@ -675,6 +808,12 @@ def build_agent_graph(
     async def _daily_summary(state: AgentState):
         return await daily_summary_node(state, **shared_kwargs)
 
+    async def _conversational(state: AgentState):
+        return await conversational_node(state, **shared_kwargs)
+
+    async def _web_search(state: AgentState):
+        return await web_search_node(state, **shared_kwargs)
+
     def _format_output(state):
         return format_output_node(state, **shared_kwargs)
 
@@ -687,6 +826,7 @@ def build_agent_graph(
     # Add nodes
     graph.add_node("save_query", _save_query)
     graph.add_node("detect_request_type", _detect_request_type)
+    graph.add_node("conversational_node", _conversational)
     graph.add_node("search_knowledge_base", _search_knowledge_base)
     graph.add_node("search_gmail", _search_gmail)
     graph.add_node("extract_action_details", _extract_action_details)
@@ -694,6 +834,8 @@ def build_agent_graph(
     graph.add_node("create_calendar_event", _create_calendar_event)
     graph.add_node("save_reminder", _save_reminder)
     graph.add_node("daily_summary", _daily_summary)
+    graph.add_node("data_analysis", data_analysis_node)
+    graph.add_node("web_search", _web_search)
     graph.add_node("format_output", _format_output)
     graph.add_node("send_report_email", _send_report_email)
 
@@ -708,11 +850,18 @@ def build_agent_graph(
         "detect_request_type",
         route_request_type,
         {
+            "conversational_node": "conversational_node",
             "search_knowledge_base": "search_knowledge_base",
             "daily_summary": "daily_summary",
             "extract_action_details": "extract_action_details",
+            "data_analysis": "data_analysis",
+            "web_search": "web_search",
+            "search_gmail": "search_gmail",
         }
     )
+
+    # conversational_node → format output (skip web search entirely)
+    graph.add_edge("conversational_node", "format_output")
 
     # Conditional: KB found → format, not found → Gmail
     graph.add_conditional_edges(
@@ -724,8 +873,18 @@ def build_agent_graph(
         }
     )
 
-    # Gmail → format output
-    graph.add_edge("search_gmail", "format_output")
+    # Conditional: Gmail found → format, not found → web_search
+    graph.add_conditional_edges(
+        "search_gmail",
+        route_gmail_results,
+        {
+            "format_output": "format_output",
+            "web_search": "web_search",
+        }
+    )
+    
+    # Web search → format output
+    graph.add_edge("web_search", "format_output")
 
     graph.add_edge("daily_summary", "format_output")
 
@@ -737,6 +896,9 @@ def build_agent_graph(
             "send_email": "send_email",
             "create_calendar_event": "create_calendar_event",
             "save_reminder": "save_reminder",
+            "data_analysis": "data_analysis",
+            "search_gmail": "search_gmail",
+            "search_knowledge_base": "search_knowledge_base",
             "format_output": "format_output",
         }
     )
@@ -745,6 +907,7 @@ def build_agent_graph(
     graph.add_edge("send_email", "format_output")
     graph.add_edge("create_calendar_event", "format_output")
     graph.add_edge("save_reminder", "format_output")
+    graph.add_edge("data_analysis", "format_output")
 
     # Format → Report Email
     graph.add_edge("format_output", "send_report_email")
@@ -772,15 +935,16 @@ def build_agent_graph(
         checkpointer=memory_saver,
         interrupt_before=["send_email", "create_calendar_event", "save_reminder"]
     )
-    logger.info("Secretary AI Agent graph compiled successfully with Memory and HITL")
+    logger.info("Aria Agent graph compiled successfully with Memory and HITL")
 
     return compiled_graph
 
 
-def create_initial_state(query: str, project_id: str = "default") -> AgentState:
+def create_initial_state(query: str, project_id: str = "default", file_path: str = None, user_id: str = "") -> AgentState:
     """Create the initial state for a new agent invocation."""
     return AgentState(
         query=query,
+        user_id=user_id,
         request_type="",
         action_type="",
         priority="medium",
@@ -791,5 +955,7 @@ def create_initial_state(query: str, project_id: str = "default") -> AgentState:
         status="pending",
         metadata={},
         project_id=project_id,
-        chat_history=[]
+        chat_history=[],
+        file_path=file_path,
+        chart_data=None
     )

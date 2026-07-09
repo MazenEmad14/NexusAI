@@ -52,7 +52,11 @@ class NotificationEngine:
 
         gmail_service = getattr(self.app, "gmail_service", None)
         if gmail_service and gmail_service.is_authenticated():
-            urgent_emails = gmail_service.search_emails(query="is:unread newer_than:1d", max_results=5)
+            urgent_emails = await asyncio.to_thread(
+                gmail_service.search_emails,
+                query="is:unread newer_than:1d",
+                max_results=5
+            )
             for email in urgent_emails:
                 priority = detect_priority(f"{email.get('subject', '')} {email.get('snippet', '')}")
                 if priority in ("critical", "high"):

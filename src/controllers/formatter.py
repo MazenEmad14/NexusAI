@@ -47,12 +47,16 @@ class ResponseFormatter:
         """Format email sent confirmation."""
         to = details.get('to', details.get('recipient', 'recipient'))
         subject = details.get('subject', '')
-        return (
+        body = details.get('body', '')
+        response = (
             f"✅ *Email Sent Successfully!*\n\n"
             f"📧 To: {to}\n"
             f"📋 Subject: {subject}\n"
             f"📤 Status: Delivered"
         )
+        if body:
+            response += f"\n\n📝 *Message Body:*\n{body}"
+        return response
 
     @staticmethod
     def format_event_created(details: dict) -> str:

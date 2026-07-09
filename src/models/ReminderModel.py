@@ -33,9 +33,9 @@ class ReminderModel(BaseDataModel):
         reminder.id = result.inserted_id
         return reminder
 
-    async def get_active_reminders(self, project_id: str, limit: int = 20):
+    async def get_active_reminders(self, project_id: str, user_id: str, limit: int = 20):
         cursor = self.collection.find(
-            {"project_id": project_id, "is_completed": False}
+            {"project_id": project_id, "user_id": user_id, "is_completed": False}
         ).sort("date", 1).limit(limit)
 
         reminders = []
@@ -43,15 +43,15 @@ class ReminderModel(BaseDataModel):
             reminders.append(Reminder(**doc))
         return reminders
 
-    async def mark_completed(self, reminder_id):
+    async def mark_completed(self, reminder_id, user_id: str):
         await self.collection.update_one(
-            {"_id": reminder_id},
+            {"_id": reminder_id, "user_id": user_id},
             {"$set": {"is_completed": True}}
         )
 
-    async def get_all_reminders(self, project_id: str, limit: int = 50):
+    async def get_all_reminders(self, project_id: str, user_id: str, limit: int = 50):
         cursor = self.collection.find(
-            {"project_id": project_id}
+            {"project_id": project_id, "user_id": user_id}
         ).sort("created_at", -1).limit(limit)
 
         reminders = []
