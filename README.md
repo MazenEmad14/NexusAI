@@ -20,7 +20,7 @@ It lets you upload text or PDF files, split them into chunks, store metadata in 
 
 ```text
 mini-RAG-APP/
-|-- src/
+|-- src/                    # FastAPI backend
 |   |-- controllers/        # File processing and NLP logic
 |   |-- helpers/            # Application settings
 |   |-- models/             # Data models and database schemas
@@ -31,13 +31,21 @@ mini-RAG-APP/
 |   |-- .env.example        # Environment variables example
 |   |-- main.py             # FastAPI entry point
 |   `-- requirements.txt
+|-- frontend/               # React (Vite) frontend application
+|-- docker/                 # Docker Compose configurations (e.g., MongoDB)
+|-- tests/                  # Pytest unit and integration tests
+|-- docs/                   # Additional documentation
+|-- backup_script.py        # Utility script for backups
+|-- check_mongo.py          # Utility script to verify MongoDB connection
+|-- pytest.ini              # Pytest configuration
 `-- README.md
 ```
 
 ## Requirements
 
 - Python 3.10 or newer.
-- MongoDB running locally or remotely.
+- Node.js (for running the React frontend).
+- MongoDB running locally or remotely (can be run via Docker in `docker/`).
 - API key for the LLM provider you want to use.
 - Git and a terminal.
 
@@ -128,6 +136,7 @@ Do not commit `src/.env` to GitHub because it may contain API keys and connectio
 
 ## Running the App
 
+### Backend
 ```bash
 uvicorn src.main:app --reload --host 0.0.0.0 --port 5000
 ```
@@ -137,6 +146,15 @@ After startup:
 - API root: `http://localhost:5000/api/v1/`
 - Swagger docs: `http://localhost:5000/docs`
 - ReDoc: `http://localhost:5000/redoc`
+
+### Frontend
+In a new terminal, run the following to start the React UI:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
 ## Usage Flow
 
