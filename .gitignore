@@ -2,3 +2,28 @@ src/credentials.json
 src/token.json
 src/calendar_token.json
 src/.env
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Cache and logs
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.log
+
+# Node
+node_modules/
+dist/
+.npm/
+
+# IDEs
+.vscode/
+.idea/

@@ -11,6 +11,7 @@ class Reminder(BaseModel):
     priority: str = Field(default="medium")        # low | medium | high | critical
     notes: str = Field(default="")
     is_completed: bool = Field(default=False)
+    user_id: str = Field(default="")
     project_id: str = Field(default="default")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -90,9 +90,9 @@ class QdrantDBProvider(VectorDBInterface):
         }
 
         try:
-            _ = self.client.upload_records(
+            _ = self.client.upsert(
                 collection_name=collection_name,
-                records=[models.Record(**record_kwargs)],
+                points=[models.PointStruct(**record_kwargs)],
             )
         except Exception as e:
             self.logger.error(f"Error while inserting record: {e}")
@@ -143,12 +143,12 @@ class QdrantDBProvider(VectorDBInterface):
                     },
                 }
 
-                batch_records.append(models.Record(**record_kwargs))
+                batch_records.append(models.PointStruct(**record_kwargs))
 
             try:
-                _ = self.client.upload_records(
+                _ = self.client.upsert(
                     collection_name=collection_name,
-                    records=batch_records,
+                    points=batch_records,
                 )
             except Exception as e:
                 self.logger.error(f"Error while inserting batch: {e}")
@@ -169,17 +169,17 @@ class QdrantDBProvider(VectorDBInterface):
             self.logger.error(f"Can not search non-existed collection: {collection_name}")
             return False
 
-        result = self.client.search(
+        result = self.client.query_points(
             collection_name=collection_name,
-            query_vector=vector,
+            query=vector,
             limit=limit,
         )
-        if not result or len(result) == 0:
+        if not result or not result.points or len(result.points) == 0:
             return None
         return [
             RetrievedDocument(**{
                 "score": res.score,
                 "text": res.payload["text"]
             })
-            for res in result
+            for res in result.points
         ]

@@ -8,8 +8,9 @@ Provides REST endpoints for:
   - Daily Summary (LLM-generated briefing)
 """
 
-from fastapi import APIRouter, status, Request
+from fastapi import APIRouter, status, Request, Depends
 from fastapi.responses import JSONResponse
+from helpers.auth_utils import get_current_user
 import logging
 
 logger = logging.getLogger('uvicorn.error')
@@ -24,7 +25,7 @@ dashboard_router = APIRouter(
 # GET /api/v1/tasks
 # ─────────────────────────────────────────────
 @dashboard_router.get("/tasks")
-async def get_tasks(request: Request, project_id: str = "default"):
+async def get_tasks(request: Request, project_id: str = "default", current_user: dict = Depends(get_current_user)):
     """Fetch pending tasks from MongoDB."""
     try:
         if not hasattr(request.app, "mongo_db") or request.app.mongo_db is None:
@@ -37,7 +38,7 @@ async def get_tasks(request: Request, project_id: str = "default"):
         try:
             from models.TaskModel import TaskModel
             task_model = await TaskModel.create_instance(db_client=request.app.mongo_db)
-            tasks = await task_model.get_pending_tasks(project_id=project_id, limit=50)
+            tasks = await task_model.get_pending_tasks(project_id=project_id, user_id=current_user["_id"], limit=50)
         except Exception:
             tasks = []
 
@@ -70,7 +71,7 @@ async def get_tasks(request: Request, project_id: str = "default"):
 # GET /api/v1/reminders
 # ─────────────────────────────────────────────
 @dashboard_router.get("/reminders")
-async def get_reminders(request: Request, project_id: str = "default"):
+async def get_reminders(request: Request, project_id: str = "default", current_user: dict = Depends(get_current_user)):
     """Fetch reminders from MongoDB."""
     try:
         if not hasattr(request.app, "mongo_db") or request.app.mongo_db is None:
@@ -83,7 +84,7 @@ async def get_reminders(request: Request, project_id: str = "default"):
         try:
             from models.ReminderModel import ReminderModel
             reminder_model = await ReminderModel.create_instance(db_client=request.app.mongo_db)
-            reminders = await reminder_model.get_all_reminders(project_id=project_id, limit=50)
+            reminders = await reminder_model.get_all_reminders(project_id=project_id, user_id=current_user["_id"], limit=50)
         except Exception:
             reminders = []
 
@@ -233,7 +234,7 @@ async def get_daily_summary(request: Request, project_id: str = "default"):
                 logger.error(f"Error fetching reminders for summary: {e}")
 
         # 5. Generate LLM Summary
-        summary_prompt = f"""You are an elite executive assistant providing a daily briefing.
+        summary_prompt = f"""You are Aria, an elite executive assistant providing a daily briefing.
 Format the output professionally using WhatsApp-style formatting (emojis, bolding with *text*).
 
 Here is the data for today:

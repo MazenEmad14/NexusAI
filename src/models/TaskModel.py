@@ -32,9 +32,9 @@ class TaskModel(BaseDataModel):
             logger.error(f"Error creating task: {e}")
             return False
 
-    async def get_pending_tasks(self, project_id: str, limit: int = 10) -> list[Task]:
+    async def get_pending_tasks(self, project_id: str, user_id: str, limit: int = 10) -> list[Task]:
         try:
-            cursor = self.collection.find({"project_id": project_id, "status": "pending"})
+            cursor = self.collection.find({"project_id": project_id, "user_id": user_id, "status": "pending"})
             cursor = cursor.sort("created_at", -1).limit(limit)
             documents = await cursor.to_list(length=limit)
             
@@ -48,11 +48,12 @@ class TaskModel(BaseDataModel):
             logger.error(f"Error fetching tasks: {e}")
             return []
 
-    async def search_tasks(self, project_id: str, text: str, limit: int = 10) -> list[Task]:
+    async def search_tasks(self, project_id: str, user_id: str, text: str, limit: int = 10) -> list[Task]:
         try:
             cursor = self.collection.find(
                 {
                     "project_id": project_id,
+                    "user_id": user_id,
                     "status": "pending",
                     "$text": {"$search": text},
                 },

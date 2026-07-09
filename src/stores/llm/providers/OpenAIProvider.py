@@ -1,4 +1,5 @@
 from openai import OpenAI
+import httpx
 import logging
 from ..LLMInterface import LLMInterface
 from ..LLMEnums import OpenAIEnums
@@ -29,8 +30,9 @@ class OpenAIProvider(LLMInterface):
         self.enums = OpenAIEnums
 
         self.client = OpenAI(
-            api_key=self.api_key
-            ,base_url =self.api_url
+            api_key=self.api_key,
+            base_url=self.api_url,
+            http_client=httpx.Client()
         )
 
         self.logger = logging.getLogger(__name__)
@@ -46,7 +48,7 @@ class OpenAIProvider(LLMInterface):
     def process_text(self, text: str):
         return text[:self.default_input_max_characters].strip()
     
-    def generate_text(self, prompt: str, chat_history: list=[], max_output_tokens: int=None,
+    def generate_text(self, prompt: str, chat_history: list=None, max_output_tokens: int=None,
                             temperature: float = None):
         
 
@@ -59,9 +61,9 @@ class OpenAIProvider(LLMInterface):
             return None
         
         max_output_tokens = max_output_tokens if max_output_tokens else self.default_generation_max_output_tokens
-        temperature = temperature if temperature else self.default_generation_temperature
+        temperature = temperature if temperature is not None else self.default_generation_temperature
 
-        chat_history_copy = chat_history.copy() if chat_history else []
+        chat_history_copy = chat_history.copy() if chat_history is not None else []
         chat_history_copy.append(self.construct_prompt(prompt =prompt ,role=OpenAIEnums.USER.value))
 
         response = self.client.chat.completions.create(
@@ -123,3 +125,19 @@ class OpenAIProvider(LLMInterface):
             "role" :role,
             "content" : self.process_text(prompt)
         }
+
+    def generate_audio_from_text(self, text: str) -> bytes:
+        if not self.client:
+            self.logger.error("OpenAI client was not set for TTS")
+            return b""
+        
+        try:
+            response = self.client.audio.speech.create(
+                model="tts-1",
+                voice="alloy",
+                input=text
+            )
+            return response.content
+        except Exception as e:
+            self.logger.error(f"Error generating audio from text: {e}")
+            return b""

@@ -18,7 +18,7 @@ class DailySummaryService:
         self.generation_client = generation_client
         self.db_client = db_client
 
-    async def collect(self, project_id: str = "default") -> dict:
+    async def collect(self, project_id: str = "default", user_id: str = "") -> dict:
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
 
@@ -57,13 +57,13 @@ class DailySummaryService:
         if self.db_client is not None:
             try:
                 task_model = await TaskModel.create_instance(self.db_client)
-                tasks = await task_model.get_pending_tasks(project_id, limit=10)
+                tasks = await task_model.get_pending_tasks(project_id, user_id, limit=10)
             except Exception as exc:
                 logger.error(f"Error fetching tasks for summary: {exc}")
 
             try:
                 reminder_model = await ReminderModel.create_instance(self.db_client)
-                reminders = await reminder_model.get_active_reminders(project_id, limit=10)
+                reminders = await reminder_model.get_active_reminders(project_id, user_id, limit=10)
             except Exception as exc:
                 logger.error(f"Error fetching reminders for summary: {exc}")
 
@@ -108,12 +108,21 @@ class DailySummaryService:
             "reminders_text": reminders_text,
         }
 
-    async def generate(self, project_id: str = "default", chat_history: list | None = None) -> dict:
-        data = await self.collect(project_id=project_id)
+    async def generate(self, project_id: str = "default", user_id: str = "", chat_history: list = None) -> dict:
+        data = await self.collect(project_id=project_id, user_id=user_id)
         text = self.render_source_text(data)
 
-        prompt = f"""You are an elite executive assistant providing a daily briefing.
+        prompt = f"""You are Aria, an elite executive assistant providing a daily briefing.
 Use the available calendar, email, task, and reminder data. Highlight critical and high priority items first.
+
+Mandatory Response Rules:
+1. Be human, natural, and highly friendly. Avoid scripted templates or artificial introductions.
+2. Be concise and answer exactly what was asked. Keep simple answers short, and complex answers detailed but without fluff. Make it suitable and direct for voice interaction.
+3. NEVER use Emojis.
+4. Do not repeat the user's question at the beginning of the response.
+5. If an action was taken, confirm it simply and clearly without excessive celebration.
+6. If there is no result or an error occurred, state it directly and calmly without over-apologizing or giving complex technical explanations.
+7. Always respond in the EXACT same language that the user used (Arabic or English).
 
 [MEETINGS]
 {text["events_text"]}

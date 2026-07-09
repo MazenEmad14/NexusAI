@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from typing import List
 class PushRequest(BaseModel):
@@ -6,4 +6,4 @@ class PushRequest(BaseModel):
     
 class SearchRequest(BaseModel):
     text: str
-    limit: Optional[int] = 5
+    limit: Optional[int] = Field(default=5, gt=0)

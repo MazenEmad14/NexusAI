@@ -1,12 +1,13 @@
 import os
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from helpers.exceptions import GoogleAuthRequiredException
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -27,8 +28,10 @@ class CalendarService:
     def __init__(self, credentials_path: str = None, token_path: str = None):
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         self.credentials_path = credentials_path or os.path.join(base_dir, "credentials.json")
-        self.token_path = token_path or os.path.join(base_dir, "calendar_token.json")
+        # Use shared token.json for all Google services
+        self.token_path = token_path or os.path.join(base_dir, "token.json")
         self.service = None
+        self.lock = threading.Lock()
 
     def authenticate(self, allow_interactive: bool = True):
         """Authenticate with Google Calendar API using OAuth2."""
@@ -53,31 +56,8 @@ class CalendarService:
                     creds = None # Force re-auth
             
             if not creds or not creds.valid:
-                if not allow_interactive:
-                    logger.warning("Calendar: Re-auth required, but allow_interactive is False. Returning False.")
-                    return False
-
-                logger.info("Calendar: Re-auth required. Starting local server for OAuth...")
-                if not os.path.exists(self.credentials_path):
-                    logger.error(
-                        f"credentials.json not found at {self.credentials_path}. "
-                        "Please download it from Google Cloud Console."
-                    )
-                    return False
-
-                try:
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        self.credentials_path, SCOPES
-                    )
-                    creds = flow.run_local_server(
-                        port=0,
-                        prompt='select_account consent',
-                        access_type='offline',
-                        open_browser=False
-                    )
-                except Exception as e:
-                    logger.error(f"Calendar: Authentication failed during local server flow: {e}")
-                    return False
+                logger.warning("Calendar: Re-auth required, raising GoogleAuthRequiredException.")
+                raise GoogleAuthRequiredException("Please connect your Google account from the Integrations panel to perform this action.")
 
             try:
                 with open(self.token_path, 'w') as token:
@@ -143,11 +123,12 @@ class CalendarService:
                     if '@' in email
                 ]
 
-            event = self.service.events().insert(
-                calendarId='primary', 
-                body=event_body,
-                sendUpdates='all'
-            ).execute()
+            with self.lock:
+                event = self.service.events().insert(
+                    calendarId='primary', 
+                    body=event_body,
+                    sendUpdates='all'
+                ).execute()
 
             logger.info(f"Calendar event created: {event.get('id')}")
 
@@ -177,14 +158,15 @@ class CalendarService:
             now = datetime.utcnow().isoformat() + 'Z'
             time_max = (datetime.utcnow() + timedelta(days=days_ahead)).isoformat() + 'Z'
 
-            events_result = self.service.events().list(
-                calendarId='primary',
-                timeMin=now,
-                timeMax=time_max,
-                maxResults=max_results,
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
+            with self.lock:
+                events_result = self.service.events().list(
+                    calendarId='primary',
+                    timeMin=now,
+                    timeMax=time_max,
+                    maxResults=max_results,
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
 
             events = events_result.get('items', [])
 
@@ -209,9 +191,10 @@ class CalendarService:
             return False
 
         try:
-            self.service.events().delete(
-                calendarId='primary', eventId=event_id
-            ).execute()
+            with self.lock:
+                self.service.events().delete(
+                    calendarId='primary', eventId=event_id
+                ).execute()
             logger.info(f"Calendar event deleted: {event_id}")
             return True
         except Exception as e:
