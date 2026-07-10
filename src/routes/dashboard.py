@@ -38,7 +38,7 @@ async def get_tasks(request: Request, project_id: str = "default", current_user:
         try:
             from models.TaskModel import TaskModel
             task_model = await TaskModel.create_instance(db_client=request.app.mongo_db)
-            tasks = await task_model.get_pending_tasks(project_id=project_id, user_id=current_user["_id"], limit=50)
+            tasks = await task_model.get_pending_tasks(project_id=project_id, user_id=str(current_user["_id"]), limit=50)
         except Exception:
             tasks = []
 
@@ -84,7 +84,7 @@ async def get_reminders(request: Request, project_id: str = "default", current_u
         try:
             from models.ReminderModel import ReminderModel
             reminder_model = await ReminderModel.create_instance(db_client=request.app.mongo_db)
-            reminders = await reminder_model.get_all_reminders(project_id=project_id, user_id=current_user["_id"], limit=50)
+            reminders = await reminder_model.get_all_reminders(project_id=project_id, user_id=str(current_user["_id"]), limit=50)
         except Exception:
             reminders = []
 
@@ -157,7 +157,7 @@ async def get_calendar_events(request: Request, days_ahead: int = 7, max_results
 # GET /api/v1/summary/daily
 # ─────────────────────────────────────────────
 @dashboard_router.get("/summary/daily")
-async def get_daily_summary(request: Request, project_id: str = "default"):
+async def get_daily_summary(request: Request, project_id: str = "default", current_user: dict = Depends(get_current_user)):
     """Generate an LLM-powered daily briefing from Calendar, Gmail, Tasks, and Reminders."""
     try:
         calendar_service = request.app.calendar_service
@@ -209,7 +209,7 @@ async def get_daily_summary(request: Request, project_id: str = "default"):
             try:
                 from models.TaskModel import TaskModel
                 task_model = await TaskModel.create_instance(db_client)
-                tasks = await task_model.get_pending_tasks(project_id, limit=5)
+                tasks = await task_model.get_pending_tasks(project_id, user_id=str(current_user["_id"]), limit=5)
                 if tasks:
                     tasks_text = "\n".join([
                         f"- {t.description} (Deadline: {t.deadline or 'None'})"
@@ -224,7 +224,7 @@ async def get_daily_summary(request: Request, project_id: str = "default"):
             try:
                 from models.ReminderModel import ReminderModel
                 reminder_model = await ReminderModel.create_instance(db_client)
-                reminders = await reminder_model.get_active_reminders(project_id, limit=5)
+                reminders = await reminder_model.get_active_reminders(project_id, user_id=str(current_user["_id"]), limit=5)
                 if reminders:
                     reminders_text = "\n".join([
                         f"- {r.task} on {r.date} {r.time}"
