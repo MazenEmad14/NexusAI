@@ -150,23 +150,26 @@ async def search_knowledge_base_node(state: AgentState, **kwargs) -> AgentState:
             return []
         try:
             gmail_query = state["query"]
+            max_results = 5  # default
+            
             if generation_client:
-                prompt = f"""Convert the user's natural language query into a Gmail search operator string.
-Return ONLY the raw search string — no explanation, no quotes, no markdown.
+                prompt = f"""Convert the user's natural language query into a Gmail search operator string and extract the desired result limit.
+Return ONLY a valid JSON object with EXACTLY two keys: "query" (string) and "max_results" (integer). Do not include markdown formatting or explanations.
 
-Rules:
-- If the user asks for "the latest email(s)" or a specific count of recent emails (e.g. "last 5 mails", "اخر 3 رسايل") with no other filter, return an empty string "". The system handles the limit automatically.
-- If the user mentions a specific relative time range, use newer_than / older_than together to bound it precisely, not just newer_than alone.
-- If unsure or the query has no clear Gmail-searchable filter, return "" rather than guessing.
+Rules for "query":
+- If the user asks for the latest emails with no specific filter (e.g. "last 5 mails", "اخر 3 رسايل"), leave "query" as an empty string "".
+- Do NOT use newer_than / older_than to fake a result count limit. Use them ONLY if the user specifies a real time range (e.g., "yesterday" -> newer_than:2d older_than:1d).
+- If unsure, return "" for the query.
+
+Rules for "max_results":
+- Extract the exact number of emails requested (e.g. "last 3 mails" -> 3).
+- If no number is requested, default to 5.
 
 Examples:
-- "emails from ahmed" -> "from:ahmed"
-- "unread emails about project X" -> "is:unread project X"
-- "give me the head and content of the last 5 mails" -> ""
-- "ما هو اخر ايميل" -> ""
-- "ايميلات امبارح" -> "newer_than:2d older_than:1d"
-- "ايميلات النهاردة" -> "newer_than:1d"
-- "رسايل فيها مرفقات من شركة جوجل" -> "has:attachment from:google"
+- "emails from ahmed" -> {{"query": "from:ahmed", "max_results": 5}}
+- "what is my last 3 mails" -> {{"query": "", "max_results": 3}}
+- "اخر 10 ايميلات امبارح" -> {{"query": "newer_than:2d older_than:1d", "max_results": 10}}
+- "رسايل فيها مرفقات من جوجل" -> {{"query": "has:attachment from:google", "max_results": 5}}
 
 User Query: "{state['query']}"
 """
@@ -175,19 +178,28 @@ User Query: "{state['query']}"
                         generation_client.generate_text,
                         prompt=prompt,
                         chat_history=state.get("chat_history", []),
-                        max_output_tokens=50,
+                        max_output_tokens=150,
                         temperature=0.0
                     )
                     if response is not None:
-                        gmail_query = response.strip().strip("'\"").strip("`")
-                        logger.info(f"Generated Gmail Query: {gmail_query}")
+                        import json
+                        import re
+                        raw_text = response.strip()
+                        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+                        if json_match:
+                            parsed = json.loads(json_match.group(0))
+                            gmail_query = parsed.get("query", "")
+                            max_results = int(parsed.get("max_results", 5))
+                        else:
+                            logger.warning(f"Failed to find JSON in Gmail query extraction: {raw_text}")
+                        logger.info(f"Generated Gmail Query: '{gmail_query}', max_results: {max_results}")
                 except Exception as e:
                     logger.warning(f"Failed to generate smart Gmail query: {e}")
                     
             emails = await asyncio.to_thread(
                 gmail_service.search_emails,
                 query=gmail_query,
-                max_results=3,
+                max_results=max_results,
             )
             logger.info(f"Gmail search returned {len(emails) if emails else 0} emails.")
             return [{
@@ -941,11 +953,8 @@ def build_agent_graph(
     graph.add_edge("save_reminder", "format_output")
     graph.add_edge("data_analysis", "format_output")
 
-    # Format → Report Email
-    graph.add_edge("format_output", "send_report_email")
-    
-    # Report Email → END
-    graph.add_edge("send_report_email", END)
+    # Format → END (Disabled report email per user request)
+    graph.add_edge("format_output", END)
 
     # Compile with Memory Checkpointer and HITL Interrupts
     from langgraph.checkpoint.memory import MemorySaver
