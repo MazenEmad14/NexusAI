@@ -977,6 +977,7 @@ def create_initial_state(query: str, project_id: str = "default", file_path: str
     return AgentState(
         query=query,
         user_id=user_id,
+        user_email="",
         request_type="",
         action_type="",
         priority="medium",
@@ -989,5 +990,6 @@ def create_initial_state(query: str, project_id: str = "default", file_path: str
         project_id=project_id,
         chat_history=[],
         file_path=file_path,
-        chart_data=None
+        chart_data=None,
+        google_token=None,
     )
