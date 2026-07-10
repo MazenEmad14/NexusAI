@@ -6,7 +6,7 @@ import os
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "super-secret-key-for-local-dev")
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "super-secret-key-for-local-development")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
 

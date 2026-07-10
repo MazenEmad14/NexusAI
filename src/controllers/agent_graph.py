@@ -182,17 +182,19 @@ User Query: "{state['query']}"
                         temperature=0.0
                     )
                     if response is not None:
-                        import json
                         import re
                         raw_text = response.strip()
-                        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-                        if json_match:
-                            parsed = json.loads(json_match.group(0))
-                            gmail_query = parsed.get("query", "")
-                            max_results = int(parsed.get("max_results", 5))
-                        else:
-                            logger.warning(f"Failed to find JSON in Gmail query extraction: {raw_text}")
-                        logger.info(f"Generated Gmail Query: '{gmail_query}', max_results: {max_results}")
+                        
+                        # Use regex to extract values robustly even if JSON is malformed
+                        q_match = re.search(r'"query"\s*:\s*"([^"]*)"', raw_text)
+                        if q_match:
+                            gmail_query = q_match.group(1)
+                            
+                        m_match = re.search(r'"max_results"\s*:\s*(\d+)', raw_text)
+                        if m_match:
+                            max_results = int(m_match.group(1))
+                            
+                        logger.info(f"Generated Gmail Query: '{gmail_query}', max_results: {max_results} (from LLM output: {raw_text})")
                 except Exception as e:
                     logger.warning(f"Failed to generate smart Gmail query: {e}")
                     
