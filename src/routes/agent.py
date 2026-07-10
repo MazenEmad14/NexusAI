@@ -287,18 +287,6 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
             initial_state["metadata"] = metadata
 
         logger.info(f"Starting agent workflow for query: {chat_request.query} [Thread: {namespaced_thread}]")
-        def find_objectid(obj, path=""):
-            from bson.objectid import ObjectId
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    find_objectid(v, path + f".{k}")
-            elif isinstance(obj, list):
-                for i, v in enumerate(obj):
-                    find_objectid(v, path + f"[{i}]")
-            elif isinstance(obj, ObjectId):
-                print(f"FOUND OBJECTID AT {path} !!!")
-
-        find_objectid(initial_state, "initial_state")
 
         final_state = await _invoke_agent_graph(agent_graph, initial_state, config, namespaced_thread)
 
@@ -517,8 +505,6 @@ try:
 except ImportError:
     pass
 
-# Ensure venv Scripts is in PATH for whisper to find ffmpeg.exe
-os.environ["PATH"] += os.pathsep + r"E:\DEPI\Project\venv\Scripts"
 
 whisper_model = None
 try:
