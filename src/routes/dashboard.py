@@ -119,18 +119,36 @@ async def get_reminders(request: Request, project_id: str = "default", current_u
 # GET /api/v1/calendar/events
 # ─────────────────────────────────────────────
 @dashboard_router.get("/calendar/events")
-async def get_calendar_events(request: Request, days_ahead: int = 7, max_results: int = 20):
+async def get_calendar_events(request: Request, days_ahead: int = 7, max_results: int = 20, current_user: dict = Depends(get_current_user)):
     """Fetch upcoming Google Calendar events."""
     try:
         calendar_service = request.app.calendar_service
+        user_email = current_user.get("email")
 
-        if not calendar_service or not calendar_service.is_authenticated():
+        # ── Fetch per-user Google Token ──
+        google_token = None
+        if user_email and hasattr(request.app, "mongo_db"):
+            from models.UserModel import UserModel
+            user_model = await UserModel.create_instance(request.app.mongo_db)
+            google_token = await user_model.get_google_token(user_email)
+
+        if not calendar_service or not google_token:
             return JSONResponse(content={
                 "status": "success",
                 "data": {
                     "events": [],
-                    "warning": "Calendar service not authenticated"
+                    "warning": "Calendar service not authenticated for this user"
                 },
+                "message": "Calendar events loaded successfully"
+            })
+
+        try:
+            calendar_service.authenticate_from_dict(google_token)
+        except Exception as e:
+            logger.warning(f"Failed to authenticate calendar from DB token: {e}")
+            return JSONResponse(content={
+                "status": "success",
+                "data": {"events": [], "warning": "Invalid Google token"},
                 "message": "Calendar events loaded successfully"
             })
 
@@ -170,10 +188,19 @@ async def get_daily_summary(request: Request, project_id: str = "default", curre
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
 
+        # ── Fetch per-user Google Token ──
+        user_email = current_user.get("email")
+        google_token = None
+        if user_email and hasattr(request.app, "mongo_db"):
+            from models.UserModel import UserModel
+            user_model = await UserModel.create_instance(request.app.mongo_db)
+            google_token = await user_model.get_google_token(user_email)
+
         # 1. Fetch Calendar Events
         events_text = "No meetings today."
-        if calendar_service and calendar_service.is_authenticated():
+        if calendar_service and google_token:
             try:
+                calendar_service.authenticate_from_dict(google_token)
                 events = calendar_service.service.events().list(
                     calendarId='primary',
                     timeMin=today_start.isoformat() + 'Z',
@@ -192,8 +219,9 @@ async def get_daily_summary(request: Request, project_id: str = "default", curre
 
         # 2. Fetch Unread Emails
         emails_text = "No new emails."
-        if gmail_service and gmail_service.is_authenticated():
+        if gmail_service and google_token:
             try:
+                gmail_service.authenticate_from_dict(google_token)
                 emails = gmail_service.search_emails(query="is:unread", max_results=5)
                 if emails:
                     emails_text = "\n".join([

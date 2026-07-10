@@ -344,6 +344,7 @@ Return ONLY a valid JSON object:
 Rules:
 - attendees: if a full email address is given, keep it as-is (don't reduce "ahmed@company.com" to "ahmed"). If only a name is given, use the name.
 - If a field is completely unknown or not specified, use null instead of guessing a default (except duration_minutes, which defaults to 60).
+- NEVER include inline comments or explanations in the JSON output (e.g. do NOT write `"title": "ميتنج" ("meeting" in Arabic)`). Output raw valid JSON only.
 """
 
         return self._extract_with_llm(query, system_prompt, chat_history)
