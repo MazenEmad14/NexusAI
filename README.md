@@ -1,270 +1,141 @@
-# Mini RAG App
+# NexusAI — Autonomous AI Secretary
 
-Mini RAG App is a FastAPI backend for experimenting with Retrieval-Augmented Generation (RAG).
-It lets you upload text or PDF files, split them into chunks, store metadata in MongoDB, index embeddings in Qdrant, then search or generate answers from the indexed content.
+NexusAI is a powerful, multi-agent AI secretary powered by LangGraph. It is designed to act as an autonomous assistant capable of managing your inbox, scheduling meetings, querying knowledge bases, and interacting via voice—all orchestrated through an intelligent, proactive backend.
 
 ## Features
 
-- Upload files per project.
-- Supports `text/plain` and `application/pdf`.
-- Split uploaded files into chunks with configurable chunk size and overlap.
-- Store projects, assets, and chunks in MongoDB.
-- Store embeddings in a local Qdrant vector database.
-- Supports multiple LLM providers:
-  - OpenAI
-  - Cohere
-  - Groq
-- Semantic search and RAG answer endpoints.
+NexusAI integrates multiple sophisticated capabilities into a single cohesive platform:
+
+- **Multi-Agent Intelligence**: Built on LangGraph, the core agent can route tasks, make decisions, and use tools dynamically.
+- **Proactive Inbox Management**: Automatically monitors your Gmail inbox, evaluates incoming emails, and triggers notifications.
+- **Gmail & Calendar Automation**: Connects with your Google account to read/send emails and manage calendar events.
+- **RAG Knowledge Base**: Upload documents (Text, PDF), index them in Qdrant, and perform semantic search and grounded generation.
+- **Voice Interaction**: Built-in Support for Speech-to-Text (STT) and Text-to-Speech (TTS) for conversational interfaces.
+- **Web Search**: Dynamic web searching capabilities to answer questions using real-time information.
+- **Notification Engine**: A robust notification system that alerts the frontend via WebSockets/polling.
+- **CSV Data Agent**: Specialized agent to query and extract insights from CSV data.
 
 ## Project Structure
 
 ```text
-mini-RAG-APP/
-|-- src/
-|   |-- controllers/        # File processing and NLP logic
+mini-RAG-APP/ (NexusAI Workspace)
+|-- src/                    # FastAPI backend
+|   |-- controllers/        # Agent logic (LangGraph, Proactive Agent)
+|   |-- services/           # Core services (Gmail, Calendar, Notifications, RAG)
 |   |-- helpers/            # Application settings
 |   |-- models/             # Data models and database schemas
-|   |-- routes/             # FastAPI routes
-|   |-- stores/
-|   |   |-- llm/            # LLM providers
-|   |   `-- vectordb/       # Vector database provider
+|   |-- routes/             # FastAPI endpoints (Agent, Auth, RAG, etc.)
+|   |-- stores/             # Data access layers (LLMs, Vector DBs, Gmail, Calendar)
 |   |-- .env.example        # Environment variables example
 |   |-- main.py             # FastAPI entry point
 |   `-- requirements.txt
+|-- frontend/               # React (Vite) frontend application
+|-- docker/                 # Docker Compose configurations (e.g., MongoDB)
+|-- tests/                  # Pytest unit and E2E integration tests
+|-- docs/                   # Additional documentation
+|-- backup_script.py        # Utility script for backups
+|-- check_mongo.py          # Utility script to verify MongoDB connection
+|-- pytest.ini              # Pytest configuration
 `-- README.md
 ```
 
 ## Requirements
 
 - Python 3.10 or newer.
-- MongoDB running locally or remotely.
-- API key for the LLM provider you want to use.
+- Node.js (for running the React frontend).
+- MongoDB running locally or remotely (can be run via Docker in `docker/`).
+- API key for the LLM provider you want to use (OpenAI, Cohere, Groq).
+- Google Cloud Project credentials (`credentials.json`) for Gmail and Calendar integration.
 - Git and a terminal.
 
-## Installation
+## Installation & Setup
 
-Clone the repository and enter the project directory:
+1. **Clone the repository:**
 
-```bash
-git clone https://github.com/ahmedokasha74/mini-RAG-APP.git
-cd mini-RAG-APP
-```
+   ```bash
+   git clone https://github.com/ahmedokasha74/mini-RAG-APP.git
+   cd mini-RAG-APP
+   ```
 
-Create a virtual environment:
+2. **Set up the Python backend:**
 
-```bash
-python -m venv .venv
-```
+   Create and activate a virtual environment:
 
-Activate it on Windows:
+   ```bash
+   python -m venv .venv
+   # Windows
+   .venv\Scripts\activate
+   # Linux/macOS
+   source .venv/bin/activate
+   ```
 
-```bash
-.venv\Scripts\activate
-```
+   Install dependencies:
 
-Activate it on Linux/macOS:
+   ```bash
+   pip install -r src/requirements.txt
+   ```
 
-```bash
-source .venv/bin/activate
-```
+3. **Environment Setup:**
 
-Install dependencies:
+   Copy the example environment file:
 
-```bash
-pip install -r src/requirements.txt
-```
+   ```bash
+   # Windows
+   copy src\.env.example src\.env
+   # Linux/macOS
+   cp src/.env.example src/.env
+   ```
 
-## Environment Setup
+   Update `src/.env` with your API keys, MongoDB URI, and preferred models.
 
-Copy the example environment file:
-
-```bash
-copy src\.env.example src\.env
-```
-
-On Linux/macOS:
-
-```bash
-cp src/.env.example src/.env
-```
-
-Then update `src/.env` with your own values.
-
-Example:
-
-```env
-APP_NAME="mini-RAG"
-APP_VERSION="0.1"
-
-FILE_ALLOWED_TYPES="text/plain,application/pdf"
-FILE_MAX_SIZE=10
-FILE_DEFAULT_CHUNK_SIZE=512000
-
-MONGODB_URL="mongodb://admin:admin@localhost:27007/?authSource=admin"
-MONGODB_DATABASE="mini-rag"
-
-GENERATION_BACKEND="OPENAI"
-EMBEDDING_BACKEND="OPENAI"
-
-OPENAI_API_KEY="your-openai-api-key"
-OPENAI_API_URL=""
-COHERE_API_KEY=""
-GROQ_API_KEY=""
-
-GENERATION_MODEL_ID="gpt-4o-mini"
-EMBEDDING_MODEL_ID="text-embedding-3-small"
-EMBEDDING_MODEL_SIZE=1536
-
-INPUT_DAFAULT_MAX_CHARACTERS=1000
-GENERATION_DAFAULT_MAX_TOKENS=1000
-GENERATION_DAFAULT_TEMPERATURE=0.1
-
-VECTOR_DB_BACKEND="QDRANT"
-VECTOR_DB_PATH="src/assets/database/qdrant_db"
-VECTOR_DB_DISTANCE_METHOD="cosine"
-```
-
-Do not commit `src/.env` to GitHub because it may contain API keys and connection credentials.
+4. **Google Credentials (Optional but required for Gmail/Calendar):**
+   Place your Google `credentials.json` file inside the `src/` directory. On startup, the app will request authorization to generate `token.json` and `calendar_token.json`.
 
 ## Running the App
+
+### Backend (FastAPI & Agent Engine)
+
+Start the backend server (which also boots up the background notification engine and proactive inbox scheduler):
 
 ```bash
 uvicorn src.main:app --reload --host 0.0.0.0 --port 5000
 ```
+*(Or simply run `./src/start.sh` on Linux/macOS)*
 
 After startup:
-
 - API root: `http://localhost:5000/api/v1/`
 - Swagger docs: `http://localhost:5000/docs`
-- ReDoc: `http://localhost:5000/redoc`
 
-## Usage Flow
+### Frontend (React UI)
 
-Use the same `project_id` across all steps.
-
-### 1. Check the API
+In a new terminal, run the following to start the NexusAI UI:
 
 ```bash
-curl http://localhost:5000/api/v1/
+cd frontend
+npm install
+npm run dev
 ```
 
-### 2. Upload a File
+The frontend will be available at `http://localhost:5173`.
 
-Windows:
+## Core Workflows
+
+### AI Agent Chat
+Interact with NexusAI via the `/api/v1/agent/` endpoints or directly from the frontend dashboard. The agent dynamically decides whether to search the web, read your emails, check your calendar, or query your uploaded knowledge base.
+
+### RAG (Knowledge Base)
+You can upload files (`text/plain` or `application/pdf`) to a specific `project_id`. The system chunks the text, computes embeddings using the configured LLM, and stores them in Qdrant for the agent to query during conversations.
+
+### Proactive Secretary
+Once authenticated with Google, NexusAI runs a background scheduler (every 1 minute) to evaluate your latest unread emails. It categorizes them and sends proactive notifications to the frontend if immediate action or awareness is required.
+
+## Testing
+
+Run the end-to-end integration test suite using pytest:
 
 ```bash
-curl -X POST "http://localhost:5000/api/v1/data/upload/demo-project" ^
-  -F "file=@sample.pdf"
+pytest tests/
 ```
-
-Linux/macOS:
-
-```bash
-curl -X POST "http://localhost:5000/api/v1/data/upload/demo-project" \
-  -F "file=@sample.pdf"
-```
-
-The response returns a `file_id` that can be used in the processing step.
-
-### 3. Process the File
-
-Windows:
-
-```bash
-curl -X POST "http://localhost:5000/api/v1/data/process/demo-project" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"file_id\":\"YOUR_FILE_ID\",\"chunk_size\":100,\"overlap_size\":20,\"do_reset\":true}"
-```
-
-Linux/macOS:
-
-```bash
-curl -X POST "http://localhost:5000/api/v1/data/process/demo-project" \
-  -H "Content-Type: application/json" \
-  -d '{"file_id":"YOUR_FILE_ID","chunk_size":100,"overlap_size":20,"do_reset":true}'
-```
-
-You can omit `file_id` to process all files in the project.
-
-### 4. Index Data in Qdrant
-
-Windows:
-
-```bash
-curl -X POST "http://localhost:5000/api/v1/nlp/index/push/demo-project" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"do_reset\":true}"
-```
-
-Linux/macOS:
-
-```bash
-curl -X POST "http://localhost:5000/api/v1/nlp/index/push/demo-project" \
-  -H "Content-Type: application/json" \
-  -d '{"do_reset":true}'
-```
-
-### 5. Get Collection Info
-
-```bash
-curl http://localhost:5000/api/v1/nlp/index/info/demo-project
-```
-
-### 6. Search the Index
-
-Windows:
-
-```bash
-curl -X POST "http://localhost:5000/api/v1/nlp/index/search/demo-project" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"text\":\"Write your question here\",\"limit\":5}"
-```
-
-Linux/macOS:
-
-```bash
-curl -X POST "http://localhost:5000/api/v1/nlp/index/search/demo-project" \
-  -H "Content-Type: application/json" \
-  -d '{"text":"Write your question here","limit":5}'
-```
-
-### 7. Generate a RAG Answer
-
-Windows:
-
-```bash
-curl -X POST "http://localhost:5000/api/v1/nlp/index/answer/demo-project" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"text\":\"Write your question here\",\"limit\":5}"
-```
-
-Linux/macOS:
-
-```bash
-curl -X POST "http://localhost:5000/api/v1/nlp/index/answer/demo-project" \
-  -H "Content-Type: application/json" \
-  -d '{"text":"Write your question here","limit":5}'
-```
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-| --- | --- | --- |
-| GET | `/api/v1/` | Return application name and version |
-| POST | `/api/v1/data/upload/{project_id}` | Upload a file |
-| POST | `/api/v1/data/process/{project_id}` | Process files and create chunks |
-| POST | `/api/v1/nlp/index/push/{project_id}` | Index chunks in Qdrant |
-| GET | `/api/v1/nlp/index/info/{project_id}` | Get project collection info |
-| POST | `/api/v1/nlp/index/search/{project_id}` | Run semantic search |
-| POST | `/api/v1/nlp/index/answer/{project_id}` | Generate a RAG answer |
-
-## Notes
-
-- MongoDB must be running before starting the app.
-- Qdrant is used as a local file-based vector database through `qdrant-client`.
-- Runtime files inside `src/assets/database/` should not be committed.
-- `src/.env` should not be committed.
-- If you use Groq for generation, use another provider for embeddings because the current Groq provider does not implement embeddings.
 
 ## License
 

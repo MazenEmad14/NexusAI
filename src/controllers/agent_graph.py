@@ -138,7 +138,13 @@ async def search_knowledge_base_node(state: AgentState, **kwargs) -> AgentState:
         if not gmail_service:
             return []
         try:
-            if not gmail_service or not gmail_service.is_authenticated():
+            google_token = state.get("google_token")
+            if google_token:
+                # Per-user token from MongoDB — preferred
+                refreshed = gmail_service.authenticate_from_dict(google_token)
+                if refreshed:
+                    state["google_token"] = refreshed  # persist refreshed token
+            elif not gmail_service.is_authenticated():
                 gmail_service.authenticate(allow_interactive=False)
         except GoogleAuthRequiredException:
             return []
@@ -221,7 +227,12 @@ User Query: "{state['query']}"
         if not calendar_service:
             return []
         try:
-            if not calendar_service or not calendar_service.is_authenticated():
+            google_token = state.get("google_token")
+            if google_token:
+                refreshed = calendar_service.authenticate_from_dict(google_token)
+                if refreshed:
+                    state["google_token"] = refreshed
+            elif not calendar_service.is_authenticated():
                 calendar_service.authenticate(allow_interactive=False)
         except GoogleAuthRequiredException:
             return []
@@ -331,11 +342,18 @@ async def search_gmail_node(state: AgentState, **kwargs) -> AgentState:
 
     if not gmail_service or not gmail_service.is_authenticated():
         try:
-            success = gmail_service.authenticate()
-            if not success:
-                state["result"] = ResponseFormatter.format_error("Gmail service not configured")
-                state["status"] = "error"
-                return state
+            google_token = state.get("google_token")
+            if google_token:
+                # Per-user token from MongoDB — preferred
+                refreshed = gmail_service.authenticate_from_dict(google_token)
+                if refreshed:
+                    state["google_token"] = refreshed
+            else:
+                success = gmail_service.authenticate()
+                if not success:
+                    state["result"] = ResponseFormatter.format_error("Gmail service not configured")
+                    state["status"] = "error"
+                    return state
         except GoogleAuthRequiredException:
             state["result"] = "Please connect your Google account from the Integrations panel to perform this action."
             state["status"] = "error"
@@ -479,11 +497,18 @@ def send_email_node(state: AgentState, **kwargs) -> AgentState:
 
     if not gmail_service.is_authenticated():
         try:
-            success = gmail_service.authenticate()
-            if not success:
-                state["result"] = ResponseFormatter.format_error("Gmail service not configured")
-                state["status"] = "error"
-                return state
+            google_token = state.get("google_token")
+            if google_token:
+                # Per-user token from MongoDB — preferred
+                refreshed = gmail_service.authenticate_from_dict(google_token)
+                if refreshed:
+                    state["google_token"] = refreshed
+            else:
+                success = gmail_service.authenticate()
+                if not success:
+                    state["result"] = ResponseFormatter.format_error("Gmail service not configured")
+                    state["status"] = "error"
+                    return state
         except GoogleAuthRequiredException:
             state["result"] = "Please connect your Google account from the Integrations panel to perform this action."
             state["status"] = "error"
@@ -519,11 +544,18 @@ def create_calendar_event_node(state: AgentState, **kwargs) -> AgentState:
 
     if not calendar_service.is_authenticated():
         try:
-            success = calendar_service.authenticate()
-            if not success:
-                state["result"] = ResponseFormatter.format_error("Calendar service not configured")
-                state["status"] = "error"
-                return state
+            google_token = state.get("google_token")
+            if google_token:
+                # Per-user token from MongoDB — preferred
+                refreshed = calendar_service.authenticate_from_dict(google_token)
+                if refreshed:
+                    state["google_token"] = refreshed
+            else:
+                success = calendar_service.authenticate()
+                if not success:
+                    state["result"] = ResponseFormatter.format_error("Calendar service not configured")
+                    state["status"] = "error"
+                    return state
         except GoogleAuthRequiredException:
             state["result"] = "Please connect your Google account from the Integrations panel to perform this action."
             state["status"] = "error"

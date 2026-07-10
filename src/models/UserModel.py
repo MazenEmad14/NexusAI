@@ -1,5 +1,6 @@
 from models.BaseDataModel import BaseDataModel
 from models.db_schemes.user import User
+from typing import Optional, Dict, Any
 import logging
 
 logger = logging.getLogger('uvicorn.error')
@@ -47,3 +48,27 @@ class UserModel(BaseDataModel):
         except Exception as e:
             logger.error(f"Error updating Google Auth status: {e}")
             return False
+
+    async def update_google_token(self, email: str, token_dict: Optional[Dict[str, Any]]) -> bool:
+        """Save per-user Google OAuth token dict to MongoDB."""
+        try:
+            result = await self.collection.update_one(
+                {"email": email},
+                {"$set": {
+                    "google_token": token_dict,
+                    "is_google_connected": token_dict is not None
+                }}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Error updating Google token for {email}: {e}")
+            return False
+
+    async def get_google_token(self, email: str) -> Optional[Dict[str, Any]]:
+        """Retrieve per-user Google OAuth token dict from MongoDB."""
+        try:
+            user = await self.collection.find_one({"email": email}, {"google_token": 1})
+            return user.get("google_token") if user else None
+        except Exception as e:
+            logger.error(f"Error fetching Google token for {email}: {e}")
+            return None

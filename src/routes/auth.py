@@ -22,7 +22,7 @@ SCOPES = [
 
 CREDENTIALS_PATH = Path(__file__).resolve().parent.parent / "credentials.json"
 TOKEN_PATH = Path(__file__).resolve().parent.parent / "token.json"
-REDIRECT_URI = "http://localhost:8000/api/v1/auth/google/callback"
+REDIRECT_URI = "http://localhost:5000/api/v1/auth/google/callback"
 FRONTEND_REDIRECT_URL = "http://localhost:5173/workspace"
 
 # Store the flow instance globally to preserve PKCE code_verifier
@@ -40,10 +40,27 @@ def _cleanup_state_map():
         del _state_origin_map[k]
 
 @auth_router.get("/google/login")
-async def google_login(origin: str = None):
+async def google_login(request: Request, origin: str = None):
+    """
+    Initiate Google OAuth flow.
+    The `origin` param (frontend origin) is stored mapped to the `state` param.
+    The JWT token is used to identify the current user for per-user token storage.
+    """
     global _auth_flow_instance
     if not CREDENTIALS_PATH.exists():
         raise HTTPException(status_code=404, detail="credentials.json not found on server")
+
+    # Identify logged-in user to associate token with them after callback
+    user_email = None
+    try:
+        from helpers.auth_utils import decode_access_token
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            jwt_token = auth_header[7:]
+            decoded = decode_access_token(jwt_token)
+            user_email = decoded.get("sub") if decoded else None
+    except Exception:
+        pass
 
     try:
         flow = Flow.from_client_secrets_file(
@@ -59,12 +76,13 @@ async def google_login(origin: str = None):
         )
         _auth_flow_instance = flow
         
+        _cleanup_state_map()
+        state_data = {"expires": time.time() + 300}  # 5 minutes
         if origin and origin in ALLOWED_ORIGINS:
-            _cleanup_state_map()
-            _state_origin_map[state] = {
-                "origin": origin,
-                "expires": time.time() + 300 # 5 minutes expiry
-            }
+            state_data["origin"] = origin
+        if user_email:
+            state_data["user_email"] = user_email
+        _state_origin_map[state] = state_data
             
         return JSONResponse(content={"auth_url": authorization_url})
     except Exception as e:
@@ -92,10 +110,30 @@ async def google_callback(request: Request, code: str, state: str = None):
             credentials = _auth_flow_instance.credentials
             _auth_flow_instance = None # reset
 
+        token_dict = json.loads(credentials.to_json())
+
+        # ── Per-user token storage in MongoDB ──────────────────────────────
+        state_data = _state_origin_map.pop(state, {}) if state else {}
+        user_email = state_data.get("user_email")
         
-        with open(TOKEN_PATH, 'w') as token_file:
-            token_file.write(credentials.to_json())
-            
+        if user_email and hasattr(request.app, "mongo_db"):
+            try:
+                from models.UserModel import UserModel
+                user_model = await UserModel.create_instance(request.app.mongo_db)
+                await user_model.update_google_token(user_email, token_dict)
+                logger.info(f"Saved per-user Google token for {user_email}")
+            except Exception as e:
+                logger.error(f"Failed to save per-user token for {user_email}: {e}")
+                # Fallback: write to shared token.json so services still work
+                with open(TOKEN_PATH, 'w') as token_file:
+                    token_file.write(credentials.to_json())
+        else:
+            # No user context — write shared token.json as legacy fallback
+            logger.warning("Google callback: no user_email in state — writing shared token.json as fallback")
+            with open(TOKEN_PATH, 'w') as token_file:
+                token_file.write(credentials.to_json())
+
+        # Re-authenticate app-level services with the freshest token available
         if hasattr(request.app, "gmail_service"):
             try:
                 request.app.gmail_service.authenticate(allow_interactive=False)
@@ -108,10 +146,8 @@ async def google_callback(request: Request, code: str, state: str = None):
                 pass
             
         redirect_url = FRONTEND_REDIRECT_URL
-        if state and state in _state_origin_map:
-            state_data = _state_origin_map.pop(state)
-            if state_data["expires"] >= time.time():
-                redirect_url = f"{state_data['origin']}/workspace"
+        if state_data.get("expires", 0) >= time.time() and state_data.get("origin"):
+            redirect_url = f"{state_data['origin']}/workspace"
                 
         return RedirectResponse(url=redirect_url)
         
@@ -121,6 +157,33 @@ async def google_callback(request: Request, code: str, state: str = None):
 
 @auth_router.get("/google/status")
 async def google_status(request: Request):
+    """
+    Return Google auth status for the currently logged-in user.
+    Checks per-user token in DB first, falls back to shared token.json.
+    """
+    # Try per-user token from DB
+    try:
+        from helpers.auth_utils import decode_access_token
+        from google.oauth2.credentials import Credentials
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer ") and hasattr(request.app, "mongo_db"):
+            jwt_token = auth_header[7:]
+            decoded = decode_access_token(jwt_token)
+            user_email = decoded.get("sub") if decoded else None
+            if user_email:
+                from models.UserModel import UserModel
+                user_model = await UserModel.create_instance(request.app.mongo_db)
+                token_dict = await user_model.get_google_token(user_email)
+                if token_dict:
+                    try:
+                        creds = Credentials.from_authorized_user_info(token_dict, SCOPES)
+                        return JSONResponse(content={"authenticated": creds.valid or bool(creds.refresh_token)})
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.error(f"Error checking per-user Google token: {e}")
+
+    # Fallback: shared token.json check
     if not TOKEN_PATH.exists():
         return JSONResponse(content={"authenticated": False})
     
