@@ -1,8 +1,9 @@
 import os
+import json
 import logging
 import threading
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -21,6 +22,10 @@ class CalendarService:
     """
     Google Calendar API wrapper — create, list, and manage calendar events.
     
+    Supports two authentication modes:
+    1. authenticate_from_dict(token_dict) — per-user token stored in MongoDB (preferred)
+    2. authenticate(allow_interactive)    — legacy shared token.json file
+
     Shares OAuth2 credentials with GmailService. If Gmail is already authenticated,
     the same token can be extended with Calendar scopes.
     """
@@ -33,8 +38,43 @@ class CalendarService:
         self.service = None
         self.lock = threading.Lock()
 
+    def authenticate_from_dict(self, token_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Authenticate using a per-user token dict stored in MongoDB.
+        This is the preferred per-user authentication method.
+
+        Returns the (possibly refreshed) token_dict so the caller can persist it back.
+        Raises GoogleAuthRequiredException if the token is invalid or expired.
+        """
+        if not token_dict:
+            raise GoogleAuthRequiredException("No Google token found. Please connect your Google account.")
+
+        try:
+            creds = Credentials.from_authorized_user_info(token_dict, SCOPES)
+        except Exception as e:
+            logger.error(f"Calendar: Failed to load token from dict: {e}")
+            raise GoogleAuthRequiredException("Invalid Google token. Please reconnect your Google account.")
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                logger.info("Calendar: Token from DB expired, refreshing...")
+                try:
+                    creds.refresh(Request())
+                    logger.info("Calendar: Token refreshed successfully.")
+                except Exception as e:
+                    logger.error(f"Calendar: Token refresh failed: {e}")
+                    raise GoogleAuthRequiredException("Google token expired and refresh failed. Please reconnect.")
+            else:
+                raise GoogleAuthRequiredException("Google token is invalid. Please reconnect your Google account.")
+
+        self.service = build('calendar', 'v3', credentials=creds)
+        logger.info("Google Calendar API authenticated successfully (per-user DB token)")
+
+        # Return refreshed token dict so caller can save it back to DB
+        return json.loads(creds.to_json())
+
     def authenticate(self, allow_interactive: bool = True):
-        """Authenticate with Google Calendar API using OAuth2."""
+        """Authenticate with Google Calendar API using OAuth2 (legacy shared token.json)."""
         creds = None
 
         if os.path.exists(self.token_path):

@@ -73,7 +73,7 @@ async def signin(request: Request, body: SignInRequest):
         
     user_model = await UserModel.create_instance(request.app.mongo_db)
     
-    # Problem 1 fix: Check if user exists first!
+    # Check if user exists first
     user_data = await user_model.get_user_by_email(body.email)
     if not user_data:
         raise HTTPException(status_code=404, detail="Email not registered")
@@ -82,12 +82,11 @@ async def signin(request: Request, body: SignInRequest):
     if not auth_utils.verify_password(body.password, user_data.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Incorrect password")
         
-    # Verify Google Auth status if token exists
-    from pathlib import Path
-    token_path = Path(__file__).resolve().parent.parent / "token.json"
-    is_google_connected = token_path.exists()
+    # FIX-5 (B1): Read per-user Google connection status from DB (google_token field)
+    # NOT from shared token.json — that's per-server, not per-user
+    is_google_connected = bool(user_data.get("google_token"))
     
-    # Optional: Update the DB if it mismatches
+    # Sync the is_google_connected flag if it drifted
     if user_data.get("is_google_connected") != is_google_connected:
         await user_model.update_google_auth_status(body.email, is_google_connected)
         

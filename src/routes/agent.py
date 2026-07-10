@@ -286,9 +286,32 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
             metadata = dict(state_snapshot.values.get("metadata", {}) or {})
             initial_state["metadata"] = metadata
 
+        # ── Inject per-user Google token ────────────────────────────────────
+        user_email = current_user.get("email")
+        if user_email and hasattr(request.app, "mongo_db"):
+            try:
+                from models.UserModel import UserModel
+                _user_model = await UserModel.create_instance(request.app.mongo_db)
+                google_token = await _user_model.get_google_token(user_email)
+                if google_token:
+                    initial_state["google_token"] = google_token
+                    initial_state["user_email"] = user_email
+            except Exception as _e:
+                logger.warning(f"Could not load per-user Google token: {_e}")
+
         logger.info(f"Starting agent workflow for query: {chat_request.query} [Thread: {namespaced_thread}]")
 
         final_state = await _invoke_agent_graph(agent_graph, initial_state, config, namespaced_thread)
+
+        # ── Persist refreshed Google token back to DB ───────────────────────
+        refreshed_token = final_state.get("google_token") if final_state else None
+        if refreshed_token and user_email and hasattr(request.app, "mongo_db"):
+            try:
+                from models.UserModel import UserModel
+                _um = await UserModel.create_instance(request.app.mongo_db)
+                await _um.update_google_token(user_email, refreshed_token)
+            except Exception as _e:
+                logger.warning(f"Could not persist refreshed Google token: {_e}")
 
         # Check if the graph is paused for human-in-the-loop approval
         try:
@@ -609,6 +632,19 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, curr
     if existing_history and state_snapshot and state_snapshot.values:
         metadata = dict(state_snapshot.values.get("metadata", {}) or {})
         initial_state["metadata"] = metadata
+
+    # ── Inject per-user Google token ────────────────────────────────────────
+    stream_user_email = current_user.get("email")
+    if stream_user_email and hasattr(request.app, "mongo_db"):
+        try:
+            from models.UserModel import UserModel
+            _user_model_s = await UserModel.create_instance(request.app.mongo_db)
+            google_token_s = await _user_model_s.get_google_token(stream_user_email)
+            if google_token_s:
+                initial_state["google_token"] = google_token_s
+                initial_state["user_email"] = stream_user_email
+        except Exception as _e:
+            logger.warning(f"Stream: Could not load per-user Google token: {_e}")
 
     async def stream_graph_execution():
         try:
