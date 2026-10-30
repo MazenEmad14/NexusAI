@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     TOKEN_ENCRYPTION_KEY: Optional[str] = None
     GOOGLE_REDIRECT_URI: str = "http://localhost:5000/api/v1/auth/google/callback"
     FRONTEND_URL: str = "http://localhost:5173"
+    # Browser origins allowed to call the API (also the origins the Google login may return to)
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"]
 
     PRIMARY_LANG: str = "en"
     DEFAULT_LANG: str = "en"

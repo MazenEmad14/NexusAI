@@ -3,6 +3,7 @@ database and a temporary upload folder; skipped when no MongoDB is reachable."""
 import io
 import sys
 import uuid
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -53,16 +54,16 @@ def client(tmp_path, monkeypatch):
 
     @app.on_event("startup")
     async def start():
-        app.mongo_conn = AsyncIOMotorClient(MONGO_URL)
-        app.mongo_db = app.mongo_conn[db_name]
+        conn = AsyncIOMotorClient(MONGO_URL)
+        app.state.services = SimpleNamespace(mongo_conn=conn, mongo_db=conn[db_name])
 
     @app.on_event("shutdown")
     async def stop():
-        await app.mongo_conn.drop_database(db_name)
-        app.mongo_conn.close()
+        await app.state.services.mongo_conn.drop_database(db_name)
+        app.state.services.mongo_conn.close()
 
     with TestClient(app) as test_client:
-        test_client.app_db = lambda: app.mongo_db
+        test_client.app_db = lambda: app.state.services.mongo_db
         test_client.upload_dir = tmp_path
         yield test_client
 

@@ -15,6 +15,7 @@ import asyncio
 import hmac
 from stores.llm.providers.OpenAIProvider import OpenAIProvider
 from helpers.config import get_settings
+from helpers.services import services_of
 from helpers.event_bus import get_user_queue, issue_ticket, redeem_ticket
 from helpers.auth_utils import get_current_user
 from models.UserModel import UserModel
@@ -129,7 +130,7 @@ async def _bind_google_token(request: Request, current_user: dict):
     token = None
     if current_user.get("email"):
         try:
-            user_model = await UserModel.create_instance(request.app.mongo_db)
+            user_model = await UserModel.create_instance(services_of(request).mongo_db)
             token = await user_model.get_google_token(current_user["email"])
         except Exception as exc:
             logger.warning(f"Could not load per-user Google token: {exc}")
@@ -141,7 +142,7 @@ async def _persist_refreshed_token(request: Request, current_user: dict, origina
     if not new_token or new_token == original_token or not current_user.get("email"):
         return
     try:
-        user_model = await UserModel.create_instance(request.app.mongo_db)
+        user_model = await UserModel.create_instance(services_of(request).mongo_db)
         await user_model.update_google_token(current_user["email"], new_token)
     except Exception as exc:
         logger.warning(f"Could not persist refreshed Google token: {exc}")
@@ -168,16 +169,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
     Takes a natural language query and orchestrates the full LangGraph workflow.
     """
     try:
-        if not hasattr(request.app, "agent_graph"):
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={
-                    "signal": ResponseSignal.AGENT_RESPONSE_ERROR.value,
-                    "error": "Agent graph not initialized"
-                }
-            )
-
-        agent_graph = request.app.agent_graph
+        agent_graph = services_of(request).agent_graph
 
         namespaced_thread = f"{str(current_user['_id'])}_{chat_request.thread_id}"
         config = {"configurable": {"thread_id": namespaced_thread}}
@@ -257,7 +249,7 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
     Endpoint to resume or cancel an interrupted graph execution (HITL Approval).
     """
     try:
-        agent_graph = request.app.agent_graph
+        agent_graph = services_of(request).agent_graph
         namespaced_thread = f"{str(current_user['_id'])}_{resume_request.thread_id}"
         config = {"configurable": {"thread_id": namespaced_thread}}
         lock = _get_resume_lock(namespaced_thread)
@@ -499,13 +491,7 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, curr
     """
     Streaming endpoint for the Secretary AI Agent using LangGraph astream_events.
     """
-    if not hasattr(request.app, "agent_graph"):
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"error": "Agent graph not initialized"}
-        )
-
-    agent_graph = request.app.agent_graph
+    agent_graph = services_of(request).agent_graph
     namespaced_thread = f"{str(current_user['_id'])}_{chat_request.thread_id}"
     config = {"configurable": {"thread_id": namespaced_thread}}
 

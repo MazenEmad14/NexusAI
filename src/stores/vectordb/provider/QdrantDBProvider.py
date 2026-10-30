@@ -23,6 +23,11 @@ class QdrantDBProvider(VectorDBInterface):
         self.client = QdrantClient(path=self.db_path)
 
     def disconnect(self):
+        if self.client is not None:
+            try:
+                self.client.close()  # releases the lock on the local storage folder
+            except Exception:
+                pass
         self.client = None
 
     def is_collection_existed(self, collection_name: str) -> bool:

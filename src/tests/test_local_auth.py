@@ -2,6 +2,7 @@
 database; skipped when none is reachable."""
 import sys
 import uuid
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -54,17 +55,17 @@ def client(monkeypatch):
 
     @app.on_event("startup")
     async def start():
-        app.mongo_conn = AsyncIOMotorClient(MONGO_URL)
-        app.mongo_db = app.mongo_conn[db_name]
-        await ensure_all_indexes(app.mongo_db)
+        conn = AsyncIOMotorClient(MONGO_URL)
+        app.state.services = SimpleNamespace(mongo_conn=conn, mongo_db=conn[db_name])
+        await ensure_all_indexes(app.state.services.mongo_db)
 
     @app.on_event("shutdown")
     async def stop():
-        await app.mongo_conn.drop_database(db_name)
-        app.mongo_conn.close()
+        await app.state.services.mongo_conn.drop_database(db_name)
+        app.state.services.mongo_conn.close()
 
     with TestClient(app) as test_client:
-        test_client.db = lambda: app.mongo_db
+        test_client.db = lambda: app.state.services.mongo_db
         yield test_client
 
 

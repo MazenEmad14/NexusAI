@@ -3,6 +3,7 @@ import jwt
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from helpers.config import get_settings
+from helpers.services import services_of
 
 SECRET_KEY = get_settings().JWT_SECRET_KEY
 ALGORITHM = "HS256"
@@ -64,11 +65,7 @@ async def get_current_user(request: Request, credentials: HTTPAuthorizationCrede
         raise HTTPException(status_code=401, detail="Invalid token")
     
     email = normalize_email(decoded["sub"])
-    if not hasattr(request.app, "mongo_db"):
-        logger.error("get_current_user 500 - DB not initialized")
-        raise HTTPException(status_code=500, detail="Database not initialized")
-    
-    user_model = await UserModel.create_instance(request.app.mongo_db)
+    user_model = await UserModel.create_instance(services_of(request).mongo_db)
     user_data = await user_model.get_user_by_email(email)
     
     if not user_data:
