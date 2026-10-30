@@ -8,23 +8,16 @@ class MeetingModel(BaseDataModel):
         super().__init__(db_client=db_client)
         self.collection = self.db_client[DataBaseEnum.COLLECTION_MEETING_NAME.value]
 
+    COLLECTION_NAME = DataBaseEnum.COLLECTION_MEETING_NAME.value
+
+    @classmethod
+    def index_specs(cls):
+        return Meeting.get_indexes()
+
     @classmethod
     async def create_instance(cls, db_client: object):
         instance = cls(db_client)
-        await instance.init_collection()
         return instance
-
-    async def init_collection(self):
-        all_collections = await self.db_client.list_collection_names()
-        if DataBaseEnum.COLLECTION_MEETING_NAME.value not in all_collections:
-            self.collection = self.db_client[DataBaseEnum.COLLECTION_MEETING_NAME.value]
-            indexes = Meeting.get_indexes()
-            for index in indexes:
-                await self.collection.create_index(
-                    index["key"],
-                    name=index["name"],
-                    unique=index["unique"]
-                )
 
     async def create_meeting(self, meeting: Meeting):
         result = await self.collection.insert_one(
