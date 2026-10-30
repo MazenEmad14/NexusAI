@@ -88,20 +88,17 @@ class TaskModel(BaseDataModel):
             )
 
     async def get_pending_tasks(self, project_id: str, user_id: str, limit: int = 10) -> list[Task]:
-        try:
-            cursor = self.collection.find({"project_id": project_id, "user_id": user_id, "status": "pending"})
-            cursor = cursor.sort("created_at", -1).limit(limit)
-            documents = await cursor.to_list(length=limit)
-            
-            tasks = []
-            for doc in documents:
-                doc["_id"] = str(doc["_id"])
-                tasks.append(Task(**doc))
-                
-            return tasks
-        except Exception as e:
-            logger.error(f"Error fetching tasks: {e}")
-            return []
+        """Pending tasks, newest first. Database errors propagate: an empty list must mean "no tasks"."""
+        cursor = self.collection.find({"project_id": project_id, "user_id": user_id, "status": "pending"})
+        cursor = cursor.sort("created_at", -1).limit(limit)
+        documents = await cursor.to_list(length=limit)
+
+        tasks = []
+        for doc in documents:
+            doc["_id"] = str(doc["_id"])
+            tasks.append(Task(**doc))
+
+        return tasks
 
     async def search_tasks(self, project_id: str, user_id: str, text: str, limit: int = 10) -> list[Task]:
         """Pending tasks of this user matching the text, best matches first."""

@@ -23,8 +23,14 @@ class DailySummaryService:
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
 
+        # Sources that could not be read. Without this the briefing would claim "No meetings today"
+        # when the calendar was merely unreachable or not connected.
+        unavailable: dict[str, str] = {}
+
         events = []
-        if self.calendar_service and self.calendar_service.is_authenticated():
+        if not (self.calendar_service and self.calendar_service.is_authenticated()):
+            unavailable["calendar"] = "Calendar is not connected."
+        else:
             try:
                 request = self.calendar_service.service.events().list(
                     calendarId="primary",
@@ -46,13 +52,17 @@ class DailySummaryService:
                     )
             except Exception as exc:
                 logger.error(f"Error fetching calendar for summary: {exc}")
+                unavailable["calendar"] = "Calendar could not be loaded right now."
 
         emails = []
-        if self.gmail_service and self.gmail_service.is_authenticated():
+        if not (self.gmail_service and self.gmail_service.is_authenticated()):
+            unavailable["emails"] = "Gmail is not connected."
+        else:
             try:
                 emails = await asyncio.to_thread(self.gmail_service.search_emails, query="is:unread", max_results=5)
             except Exception as exc:
                 logger.error(f"Error fetching Gmail for summary: {exc}")
+                unavailable["emails"] = "Emails could not be loaded right now."
 
         tasks = []
         reminders = []
@@ -62,45 +72,49 @@ class DailySummaryService:
                 tasks = await task_model.get_pending_tasks(project_id, user_id, limit=10)
             except Exception as exc:
                 logger.error(f"Error fetching tasks for summary: {exc}")
+                unavailable["tasks"] = "Tasks could not be loaded right now."
 
             try:
                 reminder_model = await ReminderModel.create_instance(self.db_client)
                 reminders = await reminder_model.get_active_reminders(project_id, user_id, limit=10)
             except Exception as exc:
                 logger.error(f"Error fetching reminders for summary: {exc}")
+                unavailable["reminders"] = "Reminders could not be loaded right now."
 
         return {
             "events": events,
             "emails": emails,
             "tasks": tasks,
             "reminders": reminders,
+            "unavailable": unavailable,
         }
 
     def render_source_text(self, data: dict) -> dict:
+        unavailable = data.get("unavailable", {})
         events_text = _join_or_default(
             [f"- {event.get('title', 'Busy')} at {event.get('start', '')}" for event in data["events"]],
-            "No meetings today.",
+            unavailable.get("calendar", "No meetings today."),
         )
         emails_text = _join_or_default(
             [
                 f"- {email.get('subject', 'No Subject')} (From: {email.get('sender', 'Unknown')})"
                 for email in data["emails"]
             ],
-            "No new emails.",
+            unavailable.get("emails", "No new emails."),
         )
         tasks_text = _join_or_default(
             [
                 f"- {task.description} (Deadline: {task.deadline or 'None'}, Priority: {getattr(task, 'priority', 'medium')})"
                 for task in data["tasks"]
             ],
-            "No pending tasks.",
+            unavailable.get("tasks", "No pending tasks."),
         )
         reminders_text = _join_or_default(
             [
                 f"- {reminder.task} on {reminder.date} {reminder.time}".strip()
                 for reminder in data["reminders"]
             ],
-            "No upcoming reminders.",
+            unavailable.get("reminders", "No upcoming reminders."),
         )
 
         return {
@@ -161,4 +175,5 @@ Draft a concise morning briefing."""
                 f"Reminders:\n{text['reminders_text']}"
             )
 
-        return {"summary": summary, "source_data": text}
+        # Callers can show which parts of the briefing are missing and why.
+        return {"summary": summary, "source_data": text, "warnings": list(data.get("unavailable", {}).values())}
