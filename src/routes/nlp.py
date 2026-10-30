@@ -1,4 +1,7 @@
-from fastapi import APIRouter, status, Request
+import asyncio
+from fastapi import APIRouter, Depends, status, Request
+from helpers.auth_utils import get_current_user
+from helpers.project_scope import scoped_project_dependency
 from fastapi.responses import JSONResponse
 from .schemes.nlp import PushRequest, SearchRequest
 from controllers import NLPController
@@ -11,7 +14,8 @@ logger = logging.getLogger('uvicorn.error')
 
 nlp_router = APIRouter(
     prefix="/api/v1/nlp",
-    tags=["api_v1"]
+    tags=["api_v1"],
+    dependencies=[Depends(get_current_user)],
 )
 
 
@@ -19,7 +23,7 @@ nlp_router = APIRouter(
 # INDEX DATA INTO VECTOR DB
 # -----------------------------
 @nlp_router.post("/index/push/{project_id}")
-async def index_project(request: Request, project_id: str, push_request: PushRequest):
+async def index_project(request: Request, push_request: PushRequest, project_id: str = Depends(scoped_project_dependency)):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.mongo_db
@@ -60,7 +64,8 @@ async def index_project(request: Request, project_id: str, push_request: PushReq
         if not page_chunks:
             break
 
-        is_inserted = nlp_controller.index_into_vector_db(
+        is_inserted = await asyncio.to_thread(
+            nlp_controller.index_into_vector_db,
             project=project,
             chunks=page_chunks,
             do_reset=push_request.do_reset if page_no == 1 else False
@@ -88,7 +93,7 @@ async def index_project(request: Request, project_id: str, push_request: PushReq
 # GET COLLECTION INFO
 # -----------------------------
 @nlp_router.get("/index/info/{project_id}")
-async def get_project_index_info(request: Request, project_id: str):
+async def get_project_index_info(request: Request, project_id: str = Depends(scoped_project_dependency)):
 
     project_model = await ProjectModel.create_instance(
         db_client=request.app.mongo_db
@@ -105,7 +110,7 @@ async def get_project_index_info(request: Request, project_id: str):
         template_parser=request.app.template_parser,
     )
 
-    collection_info = nlp_controller.get_vector_db_collection_info(project=project)
+    collection_info = await asyncio.to_thread(nlp_controller.get_vector_db_collection_info, project=project)
 
     # ✅ تحويل الـ object إلى JSON
     return {
@@ -114,7 +119,7 @@ async def get_project_index_info(request: Request, project_id: str):
     }
 
 @nlp_router.post("/index/search/{project_id}")
-async def search_index(request: Request, project_id: str, search_request: SearchRequest):
+async def search_index(request: Request, search_request: SearchRequest, project_id: str = Depends(scoped_project_dependency)):
     
     project_model = await ProjectModel.create_instance(
         db_client=request.app.mongo_db
@@ -131,7 +136,8 @@ async def search_index(request: Request, project_id: str, search_request: Search
         template_parser=request.app.template_parser,
     )
 
-    results = nlp_controller.search_vector_db_collection(
+    results = await asyncio.to_thread(
+        nlp_controller.search_vector_db_collection,
         project=project, text=search_request.text, limit=search_request.limit
     )
 
@@ -156,7 +162,7 @@ async def search_index(request: Request, project_id: str, search_request: Search
     )
 
 @nlp_router.post("/index/answer/{project_id}")
-async def answer_rag(request: Request, project_id: str, search_request: SearchRequest):
+async def answer_rag(request: Request, search_request: SearchRequest, project_id: str = Depends(scoped_project_dependency)):
     
     project_model = await ProjectModel.create_instance(
         db_client=request.app.mongo_db
@@ -173,7 +179,8 @@ async def answer_rag(request: Request, project_id: str, search_request: SearchRe
         template_parser=request.app.template_parser,
     )
 
-    answer, full_prompt, chat_history = nlp_controller.answer_rag_question(
+    answer, full_prompt, chat_history = await asyncio.to_thread(
+        nlp_controller.answer_rag_question,
         project=project,
         query=search_request.text,
         limit=search_request.limit,

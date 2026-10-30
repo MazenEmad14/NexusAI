@@ -43,11 +43,20 @@ def _build_client(monkeypatch):
     monkeypatch.setattr(dashboard_module, "ReminderModel", DummyReminderModel, raising=False)
     monkeypatch.setattr(dashboard_module, "QueryModel", DummyQueryModel, raising=False)
 
+    class DummyUserModel:
+        @classmethod
+        async def create_instance(cls, db_client):
+            return cls()
+
+        async def get_google_token(self, email):
+            return None
+
+    monkeypatch.setattr(dashboard_module, "UserModel", DummyUserModel)
+
     app = FastAPI()
     app.include_router(dashboard_module.dashboard_router)
+    app.dependency_overrides[dashboard_module.get_current_user] = lambda: {"_id": "u1", "email": "a@example.com"}
     app.mongo_db = object()
-    app.calendar_service = None
-    app.gmail_service = None
     app.generation_client = None
     app.agent_graph = None
     return TestClient(app)

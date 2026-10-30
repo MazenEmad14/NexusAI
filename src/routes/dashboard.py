@@ -8,10 +8,17 @@ Provides REST endpoints for:
   - Daily Summary (LLM-generated briefing)
 """
 
+import asyncio
+import logging
+
 from fastapi import APIRouter, status, Request, Depends
 from fastapi.responses import JSONResponse
+
 from helpers.auth_utils import get_current_user
-import logging
+from models.UserModel import UserModel
+from services.daily_summary import DailySummaryService
+from stores.calendar.CalendarService import CalendarService
+from stores.gmail.GmailService import GmailService
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -19,6 +26,37 @@ dashboard_router = APIRouter(
     prefix="/api/v1",
     tags=["api_v1", "dashboard"],
 )
+
+
+def _build_google_clients(token: dict):
+    """Build per-request Gmail/Calendar clients from one user's token (never shared)."""
+    gmail = calendar = None
+    refreshed = None
+    try:
+        gmail = GmailService()
+        refreshed = gmail.authenticate_from_dict(token)
+    except Exception as exc:
+        logger.warning(f"Gmail unavailable for this user: {exc}")
+        gmail = None
+    try:
+        calendar = CalendarService()
+        refreshed = calendar.authenticate_from_dict(token) or refreshed
+    except Exception as exc:
+        logger.warning(f"Calendar unavailable for this user: {exc}")
+        calendar = None
+    return gmail, calendar, refreshed
+
+
+async def _google_clients_for(request: Request, current_user: dict):
+    """Return (gmail, calendar) for the logged-in user, or (None, None) without a token."""
+    user_model = await UserModel.create_instance(request.app.mongo_db)
+    token = await user_model.get_google_token(current_user["email"])
+    if not token:
+        return None, None
+    gmail, calendar, refreshed = await asyncio.to_thread(_build_google_clients, token)
+    if refreshed and refreshed != token:
+        await user_model.update_google_token(current_user["email"], refreshed)
+    return gmail, calendar
 
 
 # ─────────────────────────────────────────────
@@ -39,7 +77,8 @@ async def get_tasks(request: Request, project_id: str = "default", current_user:
             from models.TaskModel import TaskModel
             task_model = await TaskModel.create_instance(db_client=request.app.mongo_db)
             tasks = await task_model.get_pending_tasks(project_id=project_id, user_id=str(current_user["_id"]), limit=50)
-        except Exception:
+        except Exception as e:
+            logger.error("Error fetching tasks for dashboard", exc_info=True)
             tasks = []
 
         return JSONResponse(content={
@@ -85,7 +124,8 @@ async def get_reminders(request: Request, project_id: str = "default", current_u
             from models.ReminderModel import ReminderModel
             reminder_model = await ReminderModel.create_instance(db_client=request.app.mongo_db)
             reminders = await reminder_model.get_all_reminders(project_id=project_id, user_id=str(current_user["_id"]), limit=50)
-        except Exception:
+        except Exception as e:
+            logger.error("Error fetching reminders for dashboard", exc_info=True)
             reminders = []
 
         return JSONResponse(content={
@@ -120,19 +160,11 @@ async def get_reminders(request: Request, project_id: str = "default", current_u
 # ─────────────────────────────────────────────
 @dashboard_router.get("/calendar/events")
 async def get_calendar_events(request: Request, days_ahead: int = 7, max_results: int = 20, current_user: dict = Depends(get_current_user)):
-    """Fetch upcoming Google Calendar events."""
+    """Fetch upcoming Google Calendar events for the logged-in user."""
     try:
-        calendar_service = request.app.calendar_service
-        user_email = current_user.get("email")
+        _, calendar_service = await _google_clients_for(request, current_user)
 
-        # ── Fetch per-user Google Token ──
-        google_token = None
-        if user_email and hasattr(request.app, "mongo_db"):
-            from models.UserModel import UserModel
-            user_model = await UserModel.create_instance(request.app.mongo_db)
-            google_token = await user_model.get_google_token(user_email)
-
-        if not calendar_service or not google_token:
+        if calendar_service is None:
             return JSONResponse(content={
                 "status": "success",
                 "data": {
@@ -142,19 +174,10 @@ async def get_calendar_events(request: Request, days_ahead: int = 7, max_results
                 "message": "Calendar events loaded successfully"
             })
 
-        try:
-            calendar_service.authenticate_from_dict(google_token)
-        except Exception as e:
-            logger.warning(f"Failed to authenticate calendar from DB token: {e}")
-            return JSONResponse(content={
-                "status": "success",
-                "data": {"events": [], "warning": "Invalid Google token"},
-                "message": "Calendar events loaded successfully"
-            })
-
-        events = calendar_service.list_events(
+        events = await asyncio.to_thread(
+            calendar_service.list_events,
             max_results=max_results,
-            days_ahead=days_ahead
+            days_ahead=days_ahead,
         )
 
         return JSONResponse(content={
@@ -163,11 +186,11 @@ async def get_calendar_events(request: Request, days_ahead: int = 7, max_results
             "message": "Calendar events loaded successfully"
         })
 
-    except Exception as e:
-        logger.error(f"Error fetching calendar events: {e}", exc_info=True)
+    except Exception:
+        logger.error("Error fetching calendar events", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"status": "error", "data": {}, "message": str(e)}
+            content={"status": "error", "data": {}, "message": "Failed to load calendar events"}
         )
 
 
@@ -178,138 +201,30 @@ async def get_calendar_events(request: Request, days_ahead: int = 7, max_results
 async def get_daily_summary(request: Request, project_id: str = "default", current_user: dict = Depends(get_current_user)):
     """Generate an LLM-powered daily briefing from Calendar, Gmail, Tasks, and Reminders."""
     try:
-        calendar_service = request.app.calendar_service
-        gmail_service = request.app.gmail_service
-        generation_client = request.app.generation_client
-        db_client = request.app.mongo_db
+        gmail_service, calendar_service = await _google_clients_for(request, current_user)
 
-        from datetime import datetime, timedelta
-
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
-
-        # ── Fetch per-user Google Token ──
-        user_email = current_user.get("email")
-        google_token = None
-        if user_email and hasattr(request.app, "mongo_db"):
-            from models.UserModel import UserModel
-            user_model = await UserModel.create_instance(request.app.mongo_db)
-            google_token = await user_model.get_google_token(user_email)
-
-        # 1. Fetch Calendar Events
-        events_text = "No meetings today."
-        if calendar_service and google_token:
-            try:
-                calendar_service.authenticate_from_dict(google_token)
-                events = calendar_service.service.events().list(
-                    calendarId='primary',
-                    timeMin=today_start.isoformat() + 'Z',
-                    timeMax=today_end.isoformat() + 'Z',
-                    singleEvents=True,
-                    orderBy='startTime'
-                ).execute()
-                items = events.get('items', [])
-                if items:
-                    events_text = "\n".join([
-                        f"- {e.get('summary', 'Busy')} at {e['start'].get('dateTime', e['start'].get('date'))}"
-                        for e in items
-                    ])
-            except Exception as e:
-                logger.error(f"Error fetching calendar for summary: {e}")
-
-        # 2. Fetch Unread Emails
-        emails_text = "No new emails."
-        if gmail_service and google_token:
-            try:
-                gmail_service.authenticate_from_dict(google_token)
-                emails = gmail_service.search_emails(query="is:unread", max_results=5)
-                if emails:
-                    emails_text = "\n".join([
-                        f"- {email.get('subject', 'No Subject')} (From: {email.get('sender', 'Unknown')})"
-                        for email in emails
-                    ])
-            except Exception as e:
-                logger.error(f"Error fetching emails for summary: {e}")
-
-        # 3. Fetch Pending Tasks
-        tasks_text = "No pending tasks."
-        if db_client is not None:
-            try:
-                from models.TaskModel import TaskModel
-                task_model = await TaskModel.create_instance(db_client)
-                tasks = await task_model.get_pending_tasks(project_id, user_id=str(current_user["_id"]), limit=5)
-                if tasks:
-                    tasks_text = "\n".join([
-                        f"- {t.description} (Deadline: {t.deadline or 'None'})"
-                        for t in tasks
-                    ])
-            except Exception as e:
-                logger.error(f"Error fetching tasks for summary: {e}")
-
-        # 4. Fetch Active Reminders
-        reminders_text = "No upcoming reminders."
-        if db_client is not None:
-            try:
-                from models.ReminderModel import ReminderModel
-                reminder_model = await ReminderModel.create_instance(db_client)
-                reminders = await reminder_model.get_active_reminders(project_id, user_id=str(current_user["_id"]), limit=5)
-                if reminders:
-                    reminders_text = "\n".join([
-                        f"- {r.task} on {r.date} {r.time}"
-                        for r in reminders
-                    ])
-            except Exception as e:
-                logger.error(f"Error fetching reminders for summary: {e}")
-
-        # 5. Generate LLM Summary
-        summary_prompt = f"""You are Aria, an elite executive assistant providing a daily briefing.
-Format the output professionally using WhatsApp-style formatting (emojis, bolding with *text*).
-
-Here is the data for today:
-[MEETINGS]
-{events_text}
-
-[UNREAD EMAILS]
-{emails_text}
-
-[PENDING TASKS]
-{tasks_text}
-
-[UPCOMING REMINDERS]
-{reminders_text}
-
-Draft a concise, beautifully formatted morning briefing."""
-
-        summary = ""
-        if generation_client:
-            response = generation_client.generate_text(
-                prompt=summary_prompt,
-                chat_history=[],
-                max_output_tokens=600,
-                temperature=0.3
-            )
-            summary = response.strip() if response else ""
-
-        if not summary:
-            summary = (
-                f"📊 **Daily Summary**\n\n"
-                f"**📅 Meetings:**\n{events_text}\n\n"
-                f"**📩 Emails:**\n{emails_text}\n\n"
-                f"**✅ Tasks:**\n{tasks_text}\n\n"
-                f"**🔔 Reminders:**\n{reminders_text}"
-            )
+        summary_service = DailySummaryService(
+            calendar_service=calendar_service,
+            gmail_service=gmail_service,
+            generation_client=request.app.generation_client,
+            db_client=request.app.mongo_db,
+        )
+        payload = await summary_service.generate(
+            project_id=project_id,
+            user_id=str(current_user["_id"]),
+        )
 
         return JSONResponse(content={
             "status": "success",
-            "data": {"summary": summary},
+            "data": {"summary": payload["summary"]},
             "message": "Daily summary generated successfully"
         })
 
-    except Exception as e:
-        logger.error(f"Error generating daily summary: {e}", exc_info=True)
+    except Exception:
+        logger.error("Error generating daily summary", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"status": "error", "data": {}, "message": str(e)}
+            content={"status": "error", "data": {}, "message": "Failed to generate daily summary"}
         )
 
 
@@ -317,46 +232,47 @@ Draft a concise, beautifully formatted morning briefing."""
 # POST /api/v1/auth/gmail/logout
 # ─────────────────────────────────────────────
 @dashboard_router.get("/health/services")
-async def health_services(request: Request):
+async def health_services(request: Request, current_user: dict = Depends(get_current_user)):
     """Return a stable health payload for the dashboard and UI status widgets."""
     try:
-        db_ok = False
-        if hasattr(request.app, "mongo_db") and request.app.mongo_db is not None:
-            db_ok = True
+        db_ok = getattr(request.app, "mongo_db", None) is not None
 
-        gmail_ok = bool(getattr(request.app, "gmail_service", None) and getattr(request.app.gmail_service, "service", None))
-        calendar_ok = bool(getattr(request.app, "calendar_service", None) and getattr(request.app.calendar_service, "service", None))
+        user_model = await UserModel.create_instance(request.app.mongo_db)
+        google_ok = bool(await user_model.get_google_token(current_user["email"]))
 
         return JSONResponse(content={
             "status": "success",
             "data": {
                 "database": "ok" if db_ok else "error",
-                "gmail": "ok" if gmail_ok else "error",
-                "calendar": "ok" if calendar_ok else "error",
+                "gmail": "ok" if google_ok else "error",
+                "calendar": "ok" if google_ok else "error",
             },
             "message": "Service health retrieved"
         })
-    except Exception as e:
-        logger.error(f"Error checking service health: {e}", exc_info=True)
+    except Exception:
+        logger.error("Error checking service health", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"status": "error", "data": {}, "message": str(e)}
+            content={"status": "error", "data": {}, "message": "Failed to check service health"}
         )
 
 
 @dashboard_router.get("/memory/{thread_id}")
-async def get_thread_memory(request: Request, thread_id: str):
-    """Return the persisted chat history for a thread when available."""
+async def get_thread_memory(request: Request, thread_id: str, current_user: dict = Depends(get_current_user)):
+    """Return the persisted chat history for one of the caller's threads."""
     try:
         agent_graph = getattr(request.app, "agent_graph", None)
         if not agent_graph:
             return JSONResponse(content={"status": "success", "data": {"thread_id": thread_id, "chat_history": []}, "message": "No agent graph available"})
 
-        config = {"configurable": {"thread_id": thread_id}}
+        # Threads are namespaced by user id, exactly as in the agent routes.
+        namespaced_thread = f"{str(current_user['_id'])}_{thread_id}"
+        config = {"configurable": {"thread_id": namespaced_thread}}
         try:
             state_snapshot = agent_graph.get_state(config)
             chat_history = state_snapshot.values.get("chat_history", []) if state_snapshot and state_snapshot.values else []
         except Exception:
+            logger.error("Error fetching thread memory", exc_info=True)
             chat_history = []
 
         return JSONResponse(content={
@@ -364,33 +280,31 @@ async def get_thread_memory(request: Request, thread_id: str):
             "data": {"thread_id": thread_id, "chat_history": chat_history},
             "message": "Thread memory retrieved"
         })
-    except Exception as e:
-        logger.error(f"Error retrieving thread memory: {e}", exc_info=True)
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "data": {}, "message": str(e)})
+    except Exception:
+        logger.error("Error retrieving thread memory", exc_info=True)
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "data": {}, "message": "Failed to retrieve thread memory"})
 
 
 @dashboard_router.post("/auth/gmail/logout")
-async def logout_gmail(request: Request):
-    """Logout of Gmail and delete token."""
+async def logout_gmail(request: Request, current_user: dict = Depends(get_current_user)):
+    """Disconnect the logged-in user's Google account (clears only their token)."""
     try:
-        gmail_service = request.app.gmail_service
-        if gmail_service:
-            gmail_service.logout_gmail()
-            return JSONResponse(content={"message": "Gmail logged out successfully"})
-        return JSONResponse(content={"warning": "Gmail service not initialized"})
-    except Exception as e:
-        logger.error(f"Error logging out of Gmail: {e}", exc_info=True)
+        user_model = await UserModel.create_instance(request.app.mongo_db)
+        await user_model.update_google_token(current_user["email"], None)
+        return JSONResponse(content={"message": "Gmail logged out successfully"})
+    except Exception:
+        logger.error("Error logging out of Gmail", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"error": str(e)}
+            content={"error": "Failed to log out of Gmail"}
         )
 
 # ─────────────────────────────────────────────
 # GET /api/v1/queries
 # ─────────────────────────────────────────────
 @dashboard_router.get("/queries")
-async def get_queries(request: Request, project_id: str = "default"):
-    """Fetch query history from MongoDB."""
+async def get_queries(request: Request, project_id: str = "default", current_user: dict = Depends(get_current_user)):
+    """Fetch the logged-in user's query history from MongoDB."""
     try:
         if not hasattr(request.app, "mongo_db") or request.app.mongo_db is None:
             return JSONResponse(content={
@@ -402,26 +316,29 @@ async def get_queries(request: Request, project_id: str = "default"):
         try:
             from models.QueryModel import QueryModel
             query_model = await QueryModel.create_instance(db_client=request.app.mongo_db)
-            queries = await query_model.get_recent_queries(project_id=project_id, limit=50)
+            queries = await query_model.get_recent_queries(
+                project_id=project_id, user_id=str(current_user["_id"]), limit=50
+            )
         except Exception:
+            logger.error("Error fetching queries", exc_info=True)
             queries = []
 
         return JSONResponse(content={
             "status": "success",
             "data": [
                 {
-                    "id": str(q.query_id) if q.query_id else "",
+                    "id": str(q.id) if q.id else "",
                     "query_text": q.query_text,
-                    "created_at": q.timestamp.isoformat() if q.timestamp else None,
+                    "created_at": q.created_at.isoformat() if q.created_at else None,
                 }
                 for q in queries
             ],
             "message": "Query history fetched"
         })
 
-    except Exception as e:
-        logger.error(f"Error fetching queries: {e}", exc_info=True)
+    except Exception:
+        logger.error("Error fetching queries", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"status": "error", "data": [], "message": str(e)}
+            content={"status": "error", "data": [], "message": "Failed to fetch query history"}
         )

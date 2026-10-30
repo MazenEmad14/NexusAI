@@ -20,7 +20,7 @@ async def web_search_node(state: AgentState, **kwargs) -> AgentState:
         logger.info(f"Using Google Custom Search API for query: {query}")
         import httpx
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
                     "https://www.googleapis.com/customsearch/v1",
                     params={"key": api_key, "cx": cx, "q": query, "num": 3}

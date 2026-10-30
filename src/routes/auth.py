@@ -1,9 +1,14 @@
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse, RedirectResponse
 from google_auth_oauthlib.flow import Flow
 from pathlib import Path
 import json
 import logging
+import time
+
+from helpers.auth_utils import get_current_user
+from helpers.config import get_settings
+from models.UserModel import UserModel
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -21,183 +26,104 @@ SCOPES = [
 ]
 
 CREDENTIALS_PATH = Path(__file__).resolve().parent.parent / "credentials.json"
-TOKEN_PATH = Path(__file__).resolve().parent.parent / "token.json"
-REDIRECT_URI = "http://localhost:5000/api/v1/auth/google/callback"
-FRONTEND_REDIRECT_URL = "http://localhost:5173/workspace"
-
-# Store the flow instance globally to preserve PKCE code_verifier
-_auth_flow_instance = None
-
-import time
-
-_state_origin_map = {}
 ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+LOGIN_TTL_SECONDS = 300
 
-def _cleanup_state_map():
+# In-flight OAuth logins keyed by the `state` value. Each entry owns its own Flow
+# (and therefore its own PKCE code_verifier), so concurrent logins never mix.
+_pending_logins: dict[str, dict] = {}
+
+
+def _cleanup_pending_logins():
     now = time.time()
-    expired = [k for k, v in _state_origin_map.items() if v["expires"] < now]
-    for k in expired:
-        del _state_origin_map[k]
+    for key in [k for k, v in _pending_logins.items() if v["expires"] < now]:
+        del _pending_logins[key]
+
+
+def _new_flow() -> Flow:
+    flow = Flow.from_client_secrets_file(str(CREDENTIALS_PATH), scopes=SCOPES)
+    flow.redirect_uri = get_settings().GOOGLE_REDIRECT_URI
+    return flow
+
 
 @auth_router.get("/google/login")
-async def google_login(request: Request, origin: str = None):
+async def google_login(origin: str = None, current_user: dict = Depends(get_current_user)):
     """
-    Initiate Google OAuth flow.
-    The `origin` param (frontend origin) is stored mapped to the `state` param.
-    The JWT token is used to identify the current user for per-user token storage.
+    Start the Google OAuth flow for the logged-in user.
+    Returns the consent URL; the callback links the resulting token to this user.
     """
-    global _auth_flow_instance
     if not CREDENTIALS_PATH.exists():
         raise HTTPException(status_code=404, detail="credentials.json not found on server")
 
-    # Identify logged-in user to associate token with them after callback
-    user_email = None
     try:
-        from helpers.auth_utils import decode_access_token
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            jwt_token = auth_header[7:]
-            decoded = decode_access_token(jwt_token)
-            user_email = decoded.get("sub") if decoded else None
-    except Exception:
-        pass
-
-    try:
-        flow = Flow.from_client_secrets_file(
-            str(CREDENTIALS_PATH),
-            scopes=SCOPES
-        )
-        flow.redirect_uri = REDIRECT_URI
-        
+        flow = _new_flow()
         authorization_url, state = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true',
             prompt='consent'
         )
-        _auth_flow_instance = flow
-        
-        _cleanup_state_map()
-        state_data = {"expires": time.time() + 300}  # 5 minutes
-        if origin and origin in ALLOWED_ORIGINS:
-            state_data["origin"] = origin
-        if user_email:
-            state_data["user_email"] = user_email
-        _state_origin_map[state] = state_data
-            
-        return JSONResponse(content={"auth_url": authorization_url})
-    except Exception as e:
-        logger.error(f"Error initializing Google OAuth flow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.error("Error initializing Google OAuth flow", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to start Google authentication")
+
+    _cleanup_pending_logins()
+    _pending_logins[state] = {
+        "flow": flow,
+        "user_email": current_user["email"],
+        "origin": origin if origin in ALLOWED_ORIGINS else None,
+        "expires": time.time() + LOGIN_TTL_SECONDS,
+    }
+    return JSONResponse(content={"auth_url": authorization_url})
+
 
 @auth_router.get("/google/callback")
-async def google_callback(request: Request, code: str, state: str = None):
-    global _auth_flow_instance
-    if not code:
-        raise HTTPException(status_code=400, detail="Missing authorization code")
-        
+async def google_callback(request: Request, code: str, state: str):
+    # `state` must match a login we started and that has not expired; otherwise the
+    # request is forged or stale and no token is stored anywhere.
+    _cleanup_pending_logins()
+    pending = _pending_logins.pop(state, None)
+    if pending is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state. Please try connecting again.")
+
     try:
-        if _auth_flow_instance is None:
-            # Fallback if server restarted during auth
-            flow = Flow.from_client_secrets_file(
-                str(CREDENTIALS_PATH),
-                scopes=SCOPES
-            )
-            flow.redirect_uri = REDIRECT_URI
-            flow.fetch_token(code=code)
-            credentials = flow.credentials
-        else:
-            _auth_flow_instance.fetch_token(code=code)
-            credentials = _auth_flow_instance.credentials
-            _auth_flow_instance = None # reset
+        flow = pending["flow"]
+        flow.fetch_token(code=code)
+        token_dict = json.loads(flow.credentials.to_json())
+    except Exception:
+        logger.error("Error exchanging Google OAuth code", exc_info=True)
+        raise HTTPException(status_code=400, detail="Failed to complete Google authentication")
 
-        token_dict = json.loads(credentials.to_json())
+    user_model = await UserModel.create_instance(request.app.mongo_db)
+    saved = await user_model.update_google_token(pending["user_email"], token_dict)
+    if not saved:
+        logger.error(f"Failed to save Google token for {pending['user_email']}")
+        raise HTTPException(status_code=500, detail="Failed to save Google token")
+    logger.info(f"Saved per-user Google token for {pending['user_email']}")
 
-        # ── Per-user token storage in MongoDB ──────────────────────────────
-        state_data = _state_origin_map.pop(state, {}) if state else {}
-        user_email = state_data.get("user_email")
-        
-        if user_email and hasattr(request.app, "mongo_db"):
-            try:
-                from models.UserModel import UserModel
-                user_model = await UserModel.create_instance(request.app.mongo_db)
-                await user_model.update_google_token(user_email, token_dict)
-                logger.info(f"Saved per-user Google token for {user_email}")
-            except Exception as e:
-                logger.error(f"Failed to save per-user token for {user_email}: {e}")
-                # Fallback: write to shared token.json so services still work
-                with open(TOKEN_PATH, 'w') as token_file:
-                    token_file.write(credentials.to_json())
-        else:
-            # No user context — write shared token.json as legacy fallback
-            logger.warning("Google callback: no user_email in state — writing shared token.json as fallback")
-            with open(TOKEN_PATH, 'w') as token_file:
-                token_file.write(credentials.to_json())
+    frontend = pending["origin"] or get_settings().FRONTEND_URL
+    return RedirectResponse(url=f"{frontend}/workspace")
 
-        # Re-authenticate app-level services with the freshest token available
-        if hasattr(request.app, "gmail_service"):
-            try:
-                request.app.gmail_service.authenticate(allow_interactive=False)
-            except Exception:
-                pass
-        if hasattr(request.app, "calendar_service"):
-            try:
-                request.app.calendar_service.authenticate(allow_interactive=False)
-            except Exception:
-                pass
-            
-        redirect_url = FRONTEND_REDIRECT_URL
-        if state_data.get("expires", 0) >= time.time() and state_data.get("origin"):
-            redirect_url = f"{state_data['origin']}/workspace"
-                
-        return RedirectResponse(url=redirect_url)
-        
-    except Exception as e:
-        logger.error(f"Error in Google OAuth callback: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch token: {str(e)}")
 
 @auth_router.get("/google/status")
-async def google_status(request: Request):
-    """
-    Return Google auth status for the currently logged-in user.
-    Checks per-user token in DB first, falls back to shared token.json.
-    """
-    # Try per-user token from DB
-    try:
-        from helpers.auth_utils import decode_access_token
-        from google.oauth2.credentials import Credentials
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer ") and hasattr(request.app, "mongo_db"):
-            jwt_token = auth_header[7:]
-            decoded = decode_access_token(jwt_token)
-            user_email = decoded.get("sub") if decoded else None
-            if user_email:
-                from models.UserModel import UserModel
-                user_model = await UserModel.create_instance(request.app.mongo_db)
-                token_dict = await user_model.get_google_token(user_email)
-                if token_dict:
-                    try:
-                        creds = Credentials.from_authorized_user_info(token_dict, SCOPES)
-                        return JSONResponse(content={"authenticated": creds.valid or bool(creds.refresh_token)})
-                    except Exception:
-                        pass
-    except Exception as e:
-        logger.error(f"Error checking per-user Google token: {e}")
+async def google_status(request: Request, current_user: dict = Depends(get_current_user)):
+    """Return whether the logged-in user has a usable Google connection."""
+    from google.oauth2.credentials import Credentials
 
-    # Fallback: shared token.json check
-    if not TOKEN_PATH.exists():
+    user_model = await UserModel.create_instance(request.app.mongo_db)
+    token_dict = await user_model.get_google_token(current_user["email"])
+    if not token_dict:
         return JSONResponse(content={"authenticated": False})
-    
     try:
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request as GoogleRequest
-        
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(GoogleRequest())
-            with open(TOKEN_PATH, 'w') as token_file:
-                token_file.write(creds.to_json())
-        
-        return JSONResponse(content={"authenticated": creds.valid})
-    except Exception as e:
-        logger.error(f"Error checking Google token status: {e}")
+        creds = Credentials.from_authorized_user_info(token_dict, SCOPES)
+        return JSONResponse(content={"authenticated": bool(creds.valid or creds.refresh_token)})
+    except Exception:
+        logger.error("Failed to parse stored Google token in google_status", exc_info=True)
         return JSONResponse(content={"authenticated": False})
+
+
+@auth_router.post("/google/disconnect")
+async def google_disconnect(request: Request, current_user: dict = Depends(get_current_user)):
+    """Forget the logged-in user's Google token."""
+    user_model = await UserModel.create_instance(request.app.mongo_db)
+    await user_model.update_google_token(current_user["email"], None)
+    return JSONResponse(content={"message": "Google account disconnected"})
