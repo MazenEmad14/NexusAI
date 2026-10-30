@@ -92,10 +92,11 @@ def test_password_rules():
 
 
 def test_password_hashing_is_robust_and_compatible_with_hashes_from_passlib():
-    from passlib.context import CryptContext
-
-    legacy = CryptContext(schemes=["bcrypt"]).hash("old password 1")  # what earlier versions stored
-    assert auth_utils.verify_password("old password 1", legacy) is True
+    # Hashes written by earlier versions (passlib's bcrypt). passlib is no longer a dependency, so a fixed
+    # sample in the same standard format stands in for them, including the $2a$ / $2y$ variants.
+    legacy = "$2b$04$MdusSwr4ao8WQfC.Ydx0KuNaKMCHSWACNKFN6ZSxc5nWsl/BakN/i"
+    for prefix in ("$2b$", "$2a$", "$2y$"):
+        assert auth_utils.verify_password("old password 1", prefix + legacy[4:]) is True, prefix
     assert auth_utils.verify_password("wrong", legacy) is False
 
     fresh = auth_utils.get_password_hash("new password 1")

@@ -1,28 +1,3 @@
-aiofiles
-apscheduler
-cohere
-fastapi
-google_api_python_client
-google_auth_oauthlib
-groq
-httpx
-langchain
-langchain_community
-langchain_experimental
-langchain_groq
-langchain_openai
-langchain_text_splitters
-langgraph
-motor
-openai
-protobuf
-pydantic
-pydantic_settings
-pymongo
-pytest
-qdrant_client
-Requests
-SQLAlchemy
-cryptography>=42.0.0
-bcrypt>=4.0.0
-tzdata
+# The dependency lists live in src/ (see src/requirements.txt). This file only forwards to it so
+# that `pip install -r requirements.txt` from the repository root installs the same thing.
+-r src/requirements.txt

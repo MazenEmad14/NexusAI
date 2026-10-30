@@ -1,0 +1,3 @@
+# Everything needed to run the tests:  pip install -r src/requirements-dev.txt
+-r requirements.txt
+pytest==8.3.4
