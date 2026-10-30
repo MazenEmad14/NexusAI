@@ -17,6 +17,8 @@ from helpers.config import get_settings
 from helpers.event_bus import get_user_queue, issue_ticket, redeem_ticket
 from helpers.auth_utils import get_current_user
 from models.UserModel import UserModel
+from helpers.google_context import set_google_token
+from pymongo.errors import PyMongoError
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -40,163 +42,24 @@ def _get_resume_lock(thread_id: str) -> asyncio.Lock:
     return lock
 
 
-def _clear_thread_checkpoints(agent_graph, thread_id: str) -> None:
-    """Completely remove all stored checkpoint entries, writes, and blobs for the provided thread."""
-    checkpointer = getattr(agent_graph, "checkpointer", None)
-    if not checkpointer:
-        return
-
-    # Modern LangGraph provides a built-in delete_thread method
-    if hasattr(checkpointer, "delete_thread"):
-        try:
-            checkpointer.delete_thread(thread_id)
-            return
-        except Exception as e:
-            logger.warning(f"Error calling delete_thread: {e}")
-
-    # Fallback for older versions or custom checkpointers
-    if hasattr(checkpointer, "storage") and isinstance(checkpointer.storage, dict):
-        if thread_id in checkpointer.storage:
-            del checkpointer.storage[thread_id]
-        else:
-            keys_to_delete = [k for k in checkpointer.storage.keys() if (isinstance(k, tuple) and k[0] == thread_id) or k == thread_id]
-            for key in keys_to_delete:
-                checkpointer.storage.pop(key, None)
-
-    if hasattr(checkpointer, "writes") and isinstance(checkpointer.writes, dict):
-        keys_to_delete = [k for k in checkpointer.writes.keys() if isinstance(k, tuple) and len(k) > 0 and k[0] == thread_id]
-        for key in keys_to_delete:
-            checkpointer.writes.pop(key, None)
-            
-    if hasattr(checkpointer, "blobs") and isinstance(checkpointer.blobs, dict):
-        keys_to_delete = [k for k in checkpointer.blobs.keys() if isinstance(k, tuple) and len(k) > 0 and k[0] == thread_id]
-        for key in keys_to_delete:
-            checkpointer.blobs.pop(key, None)
-
-
-def _has_real_checkpoint(storage, thread_id: str) -> bool:
-    """Return True only when a thread has actual checkpoint data, not just an empty container."""
-    if storage is None:
-        return False
-
-    if thread_id in storage:
-        return _contains_checkpoint_payload(storage[thread_id])
-
-    for key in storage.keys():
-        if isinstance(key, tuple) and len(key) > 0 and key[0] == thread_id:
-            return _contains_checkpoint_payload(storage[key])
-
-    return False
-
-
-def _contains_checkpoint_payload(value) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, (str, bytes, int, float, bool)):
-        return True
-    if isinstance(value, (list, tuple, set)):
-        return any(_contains_checkpoint_payload(item) for item in value)
-    if isinstance(value, dict):
-        if not value:
-            return False
-        return any(_contains_checkpoint_payload(item) for item in value.values())
-    return bool(value)
-
-
-def _load_thread_state(agent_graph, config: dict, thread_id: str, *, require_existing: bool = False):
-    """Load thread state while distinguishing fresh threads from corrupt checkpoints."""
-    def _clear_empty_placeholder_if_needed() -> None:
-        if not hasattr(agent_graph, "checkpointer") or not hasattr(agent_graph.checkpointer, "storage"):
-            return
-
-        storage = agent_graph.checkpointer.storage
-        if not _has_real_checkpoint(storage, thread_id):
-            _clear_thread_checkpoints(agent_graph, thread_id)
-            logger.info(f"Cleared empty checkpoint placeholder for thread {thread_id}")
-
-    _clear_empty_placeholder_if_needed()
-
+async def _load_thread_state(agent_graph, config: dict, thread_id: str, *, require_existing: bool = False):
+    """Load a thread's saved state. Returns None for a thread that has no history yet."""
     try:
-        return agent_graph.get_state(config)
-    except KeyError as exc:
-        message = str(exc)
-        _clear_empty_placeholder_if_needed()
-
-        if not require_existing and message and "**start**" in message:
-            logger.info(f"No checkpoint found for new thread {thread_id}; starting fresh")
-            return None
-
-        if hasattr(agent_graph, "checkpointer") and hasattr(agent_graph.checkpointer, "storage"):
-            storage = agent_graph.checkpointer.storage
-            if _has_real_checkpoint(storage, thread_id):
-                _clear_thread_checkpoints(agent_graph, thread_id)
-                logger.warning(f"Detected corrupted checkpoint for thread {thread_id}; cleared it")
-                raise ThreadStateLoadError(f"Checkpoint for thread {thread_id} is invalid", code="invalid_thread") from exc
-
-        if require_existing:
-            raise ThreadStateLoadError(f"Thread {thread_id} no longer exists", code="invalid_thread")
-
-        logger.info(f"No checkpoint found for thread {thread_id}; starting fresh")
-        return None
-    except Exception as exc:
-        _clear_empty_placeholder_if_needed()
-
-        if hasattr(agent_graph, "checkpointer") and hasattr(agent_graph.checkpointer, "storage"):
-            storage = agent_graph.checkpointer.storage
-            if _has_real_checkpoint(storage, thread_id):
-                _clear_thread_checkpoints(agent_graph, thread_id)
-                logger.warning(f"Detected corrupted checkpoint for thread {thread_id}; cleared it")
-                raise ThreadStateLoadError(f"Checkpoint for thread {thread_id} is invalid", code="invalid_thread") from exc
-
-        if require_existing:
-            raise ThreadStateLoadError(f"Thread {thread_id} no longer exists", code="invalid_thread")
-
-        logger.info(f"No checkpoint found for thread {thread_id}; starting fresh")
-        return None
-
-
-def _is_start_checkpoint_error(exc: Exception) -> bool:
-    message = str(exc)
-    return isinstance(exc, KeyError) and message and "**start**" in message
-
-
-async def _invoke_agent_graph(agent_graph, input_data, config: dict, thread_id: str):
-    """Run LangGraph ainvoke while converting startup checkpoint failures into safe thread-state errors."""
-    storage = getattr(getattr(agent_graph, "checkpointer", None), "storage", None)
-    had_real_checkpoint_before_attempt = bool(storage and _has_real_checkpoint(storage, thread_id))
-
-    try:
-        return await agent_graph.ainvoke(input_data, config=config)
-    except KeyError as exc:
-        if _is_start_checkpoint_error(exc):
-            if had_real_checkpoint_before_attempt:
-                _clear_thread_checkpoints(agent_graph, thread_id)
-                logger.warning(f"Detected corrupted checkpoint during ainvoke for thread {thread_id}; cleared it")
-                raise ThreadStateLoadError("Session expired or invalid.", code="invalid_thread") from exc
-
-            _clear_thread_checkpoints(agent_graph, thread_id)
-            logger.info(f"Fresh thread startup checkpoint issue during ainvoke for thread {thread_id}; retrying")
-            try:
-                return await agent_graph.ainvoke(input_data, config=config)
-            except KeyError as retry_exc:
-                if _is_start_checkpoint_error(retry_exc):
-                    if had_real_checkpoint_before_attempt:
-                        _clear_thread_checkpoints(agent_graph, thread_id)
-                        logger.warning(f"Detected corrupted checkpoint during ainvoke for thread {thread_id}; cleared it")
-                        raise ThreadStateLoadError("Session expired or invalid.", code="invalid_thread") from retry_exc
-                    logger.warning(f"Startup checkpoint issue persisted for thread {thread_id}; treating as fresh start")
-                    return await agent_graph.ainvoke(input_data, config=config)
-                raise
+        snapshot = await agent_graph.aget_state(config)
+    except PyMongoError:
+        # A storage outage says nothing about the thread itself; do not touch its data.
         raise
     except Exception as exc:
-        if hasattr(agent_graph, "checkpointer") and hasattr(agent_graph.checkpointer, "storage"):
-            storage = agent_graph.checkpointer.storage
-            if _has_real_checkpoint(storage, thread_id):
-                _clear_thread_checkpoints(agent_graph, thread_id)
-                logger.warning(f"Detected corrupted checkpoint during ainvoke for thread {thread_id}; cleared it")
-                logger.error(f"Actual exception during ainvoke: {exc}", exc_info=True)
-                raise ThreadStateLoadError("Session expired or invalid.", code="invalid_thread") from exc
-        raise
+        # The checkpoint exists but cannot be read (for example after a state schema change).
+        logger.error(f"Unreadable checkpoint for thread {thread_id}; deleting it", exc_info=True)
+        await agent_graph.checkpointer.adelete_thread(thread_id)
+        raise ThreadStateLoadError(f"Checkpoint for thread {thread_id} is invalid", code="invalid_thread") from exc
+
+    if snapshot is None or not (snapshot.values or snapshot.next):
+        if require_existing:
+            raise ThreadStateLoadError(f"Thread {thread_id} no longer exists", code="invalid_thread")
+        return None
+    return snapshot
 
 
 def _validate_resume_state(state_snapshot, thread_id: str, resume_token: str | None = None):
@@ -252,17 +115,23 @@ async def _build_initial_state(request: Request, chat_request: ChatRequest, curr
         metadata.pop("resume_token", None)
         initial_state["metadata"] = metadata
 
-    user_email = current_user.get("email")
-    if user_email:
+    initial_state["user_email"] = current_user.get("email") or ""
+    return initial_state
+
+
+async def _bind_google_token(request: Request, current_user: dict):
+    """Load this user's Google token and bind it to the request context for the graph nodes.
+
+    Returns (holder, original_token); the holder carries any token the nodes refreshed.
+    """
+    token = None
+    if current_user.get("email"):
         try:
             user_model = await UserModel.create_instance(request.app.mongo_db)
-            google_token = await user_model.get_google_token(user_email)
-            if google_token:
-                initial_state["google_token"] = google_token
-                initial_state["user_email"] = user_email
+            token = await user_model.get_google_token(current_user["email"])
         except Exception as exc:
             logger.warning(f"Could not load per-user Google token: {exc}")
-    return initial_state
+    return set_google_token(token), token
 
 
 async def _persist_refreshed_token(request: Request, current_user: dict, original_token, new_token):
@@ -276,11 +145,11 @@ async def _persist_refreshed_token(request: Request, current_user: dict, origina
         logger.warning(f"Could not persist refreshed Google token: {exc}")
 
 
-def _new_resume_token(agent_graph, config: dict, values: dict) -> dict:
+async def _new_resume_token(agent_graph, config: dict, values: dict) -> dict:
     """Attach a fresh single-use approval token to the paused thread; returns the new metadata."""
     metadata = dict(values.get("metadata", {}) or {})
     metadata["resume_token"] = uuid.uuid4().hex
-    agent_graph.update_state(config, {"metadata": metadata})
+    await agent_graph.aupdate_state(config, {"metadata": metadata})
     return metadata
 
 
@@ -313,7 +182,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
 
         # Preserve existing chat history if any
         try:
-            state_snapshot = _load_thread_state(agent_graph, config, namespaced_thread)
+            state_snapshot = await _load_thread_state(agent_graph, config, namespaced_thread)
         except ThreadStateLoadError as exc:
             logger.warning(f"Failed to load state for thread {namespaced_thread}: {exc}")
             return ChatResponse(
@@ -324,34 +193,21 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
             )
 
         initial_state = await _build_initial_state(request, chat_request, current_user, state_snapshot)
-        original_token = initial_state.get("google_token")
+        holder, original_token = await _bind_google_token(request, current_user)
 
         logger.info(f"Starting agent workflow [Thread: {namespaced_thread}]")
 
-        final_state = await _invoke_agent_graph(agent_graph, initial_state, config, namespaced_thread)
+        final_state = await agent_graph.ainvoke(initial_state, config=config)
 
-        await _persist_refreshed_token(
-            request, current_user, original_token, final_state.get("google_token") if final_state else None
-        )
+        await _persist_refreshed_token(request, current_user, original_token, holder["token"])
 
         # Check if the graph is paused for human-in-the-loop approval
-        try:
-            state_snapshot = agent_graph.get_state(config)
-        except Exception as exc:
-            if _is_start_checkpoint_error(exc):
-                logger.warning(f"Checkpoint issue while reading post-invoke state for thread {chat_request.thread_id}")
-                return ChatResponse(
-                    response="Session expired or invalid.",
-                    type="error",
-                    status="invalid_thread",
-                    thread_id=chat_request.thread_id
-                )
-            raise
-        
+        state_snapshot = await agent_graph.aget_state(config)
+
         if state_snapshot.next:
             action_type = final_state.get("action_type", "")
             action_details = final_state.get("action_details", {})
-            metadata = _new_resume_token(agent_graph, config, final_state)
+            metadata = await _new_resume_token(agent_graph, config, final_state)
             return ChatResponse(
                 response=f"Pending approval to execute action: {action_type}",
                 type=f"action:{action_type}",
@@ -406,7 +262,7 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
 
         async with lock:
             try:
-                state_snapshot = _load_thread_state(agent_graph, config, namespaced_thread, require_existing=True)
+                state_snapshot = await _load_thread_state(agent_graph, config, namespaced_thread, require_existing=True)
             except ThreadStateLoadError as exc:
                 logger.warning(f"Failed to load state for resume on thread {namespaced_thread}: {exc}")
                 return JSONResponse(
@@ -460,29 +316,18 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
                 existing_history = list(state_snapshot.values.get("chat_history", []))
                 existing_history.append({"role": "assistant", "content": "Action rejected by user."})
 
-                try:
-                    agent_graph.update_state(
-                        config,
-                        {
-                            "status": "rejected",
-                            "result": "Action rejected by user.",
-                            "chat_history": existing_history
-                        },
-                        as_node=paused_node
-                    )
-                except Exception as exc:
-                    if _is_start_checkpoint_error(exc):
-                        logger.warning(f"Checkpoint issue while updating state for rejected resume on thread {resume_request.thread_id}")
-                        return ChatResponse(
-                            response="Session expired or invalid.",
-                            type="error",
-                            status="invalid_thread",
-                            thread_id=resume_request.thread_id
-                        )
-                    raise
+                await agent_graph.aupdate_state(
+                    config,
+                    {
+                        "status": "rejected",
+                        "result": "Action rejected by user.",
+                        "chat_history": existing_history
+                    },
+                    as_node=paused_node
+                )
 
                 # We must resume the graph so it can finish (e.g. format_output_node)
-                final_state = await _invoke_agent_graph(agent_graph, None, config, namespaced_thread)
+                await agent_graph.ainvoke(None, config=config)
 
                 return ChatResponse(
                     response="Action was cancelled by the user.",
@@ -493,9 +338,9 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
 
             # User approved, resume graph execution
             logger.info(f"Resuming graph for thread {namespaced_thread} with approval: {resume_request.approve}")
-            original_token = state_snapshot.values.get("google_token")
-            final_state = await _invoke_agent_graph(agent_graph, None, config, namespaced_thread)
-            await _persist_refreshed_token(request, current_user, original_token, final_state.get("google_token"))
+            holder, original_token = await _bind_google_token(request, current_user)
+            final_state = await agent_graph.ainvoke(None, config=config)
+            await _persist_refreshed_token(request, current_user, original_token, holder["token"])
 
         response_type = final_state.get("request_type", "")
         if final_state.get("action_type"):
@@ -651,7 +496,7 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, curr
     config = {"configurable": {"thread_id": namespaced_thread}}
 
     try:
-        state_snapshot = _load_thread_state(agent_graph, config, namespaced_thread)
+        state_snapshot = await _load_thread_state(agent_graph, config, namespaced_thread)
     except ThreadStateLoadError as exc:
         logger.warning(f"Failed to load state for thread {namespaced_thread}: {exc}")
         async def error_stream():
@@ -660,10 +505,11 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, curr
         return StreamingResponse(error_stream(), media_type="text/event-stream")
 
     initial_state = await _build_initial_state(request, chat_request, current_user, state_snapshot)
-    original_token = initial_state.get("google_token")
 
     async def stream_graph_execution():
         try:
+            # Bound here, inside the generator, so the token is in the context the graph runs in.
+            holder, original_token = await _bind_google_token(request, current_user)
             async for event in agent_graph.astream_events(initial_state, config, version="v2"):
                 if event["event"] == "on_chat_model_stream":
                     chunk = event["data"].get("chunk")
@@ -673,17 +519,15 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, curr
                             yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
 
             # Execution finished or interrupted
-            state = agent_graph.get_state(config)
-            await _persist_refreshed_token(
-                request, current_user, original_token, state.values.get("google_token") if state else None
-            )
+            state = await agent_graph.aget_state(config)
+            await _persist_refreshed_token(request, current_user, original_token, holder["token"])
             
             if state and state.next:
                 # HITL interrupt
                 final_vals = state.values
                 action_type = final_vals.get("action_type", "")
                 action_details = final_vals.get("action_details", {})
-                metadata = _new_resume_token(agent_graph, config, final_vals)
+                metadata = await _new_resume_token(agent_graph, config, final_vals)
 
                 yield f"data: {json.dumps({'type': 'pending_action', 'action_type': action_type, 'action_details': action_details, 'metadata': metadata})}\n\n"
             else:

@@ -25,6 +25,7 @@ from models.db_schemes import Query,Reminder
 from services.daily_summary import DailySummaryService
 from services.retrieval import detect_priority, rerank_results
 from helpers.exceptions import GoogleAuthRequiredException
+from helpers.google_context import get_google_token, update_google_token
 from helpers.project_scope import scoped_project_id
 from helpers.validation import parse_recipients
 from stores.gmail.GmailService import GmailService
@@ -53,31 +54,32 @@ def _append_chat_turn(state: AgentState, role: str, content: str) -> None:
     state["chat_history"] = new_history
 
 
-def _gmail_for_state(state: AgentState) -> GmailService:
+def _gmail_for_state(state: AgentState = None) -> GmailService:
     """Build a Gmail client for this request's user.
 
     A fresh instance is created per call so credentials are never shared
-    between concurrent requests from different users.
+    between concurrent requests from different users. The token comes from the
+    request context, not from graph state (state is checkpointed to the database).
     """
-    token = state.get("google_token")
+    token = get_google_token()
     if not token:
         raise GoogleAuthRequiredException("No Google account connected.")
     service = GmailService()
     refreshed = service.authenticate_from_dict(token)
     if refreshed:
-        state["google_token"] = refreshed
+        update_google_token(refreshed)
     return service
 
 
-def _calendar_for_state(state: AgentState) -> CalendarService:
+def _calendar_for_state(state: AgentState = None) -> CalendarService:
     """Build a Calendar client for this request's user (see _gmail_for_state)."""
-    token = state.get("google_token")
+    token = get_google_token()
     if not token:
         raise GoogleAuthRequiredException("No Google account connected.")
     service = CalendarService()
     refreshed = service.authenticate_from_dict(token)
     if refreshed:
-        state["google_token"] = refreshed
+        update_google_token(refreshed)
     return service
 
 
@@ -767,6 +769,7 @@ def build_agent_graph(
     embedding_client=None,
     vectordb_client=None,
     template_parser=None,
+    checkpointer=None,
 ):
     """
     Build and compile the Secretary AI LangGraph workflow.
@@ -915,27 +918,12 @@ def build_agent_graph(
     # Format → END (Disabled report email per user request)
     graph.add_edge("format_output", END)
 
-    # Compile with Memory Checkpointer and HITL Interrupts
-    from langgraph.checkpoint.memory import MemorySaver
-    memory_saver = MemorySaver()
-    
-    # Priority Fix: Ensure every server reload starts with fresh checkpoint memory
-    # Fully clear MemorySaver storage to prevent stale graph state contamination
-    if hasattr(memory_saver, "storage") and hasattr(memory_saver.storage, "clear"):
-        memory_saver.storage.clear()
-    if hasattr(memory_saver, "writes") and hasattr(memory_saver.writes, "clear"):
-        memory_saver.writes.clear()
-    if hasattr(memory_saver, "blobs") and hasattr(memory_saver.blobs, "clear"):
-        memory_saver.blobs.clear()
-        
-    logger.info("Memory initialized fresh")
-    logger.info("Checkpoint storage cleared")
-    
+    # Compile with the injected persistent checkpointer and HITL interrupts
     compiled_graph = graph.compile(
-        checkpointer=memory_saver,
+        checkpointer=checkpointer,
         interrupt_before=["send_email", "create_calendar_event", "save_reminder"]
     )
-    logger.info("Aria Agent graph compiled successfully with Memory and HITL")
+    logger.info("Aria Agent graph compiled successfully with persistent checkpointer and HITL")
 
     return compiled_graph
 
@@ -959,5 +947,4 @@ def create_initial_state(query: str, project_id: str = "default", file_path: str
         chat_history=[],
         file_path=file_path,
         chart_data=None,
-        google_token=None,
     )

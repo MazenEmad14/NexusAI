@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # ── 1.1 per-request Google clients ───────────────────────────────────────────
 def test_google_clients_are_never_shared_between_users(monkeypatch):
     from controllers import agent_graph
+    from helpers.google_context import set_google_token
     from stores.gmail.GmailService import GmailService
 
     def fake_auth(self, token):
@@ -26,8 +27,8 @@ def test_google_clients_are_never_shared_between_users(monkeypatch):
     seen = {}
 
     def run(user):
-        state = {"google_token": {"user": user}}
-        client = agent_graph._gmail_for_state(state)
+        set_google_token({"user": user})  # what a request does before invoking the graph
+        client = agent_graph._gmail_for_state()
         time.sleep(0.02)  # another user authenticates while this one is in flight
         seen[user] = client.service
 
@@ -41,6 +42,9 @@ def test_google_clients_are_never_shared_between_users(monkeypatch):
 def test_graph_nodes_refuse_to_act_without_the_users_own_token():
     from controllers import agent_graph
 
+    from helpers.google_context import set_google_token
+
+    set_google_token(None)
     state = {"action_details": {"recipient": "x@example.com", "subject": "s", "body": "b"}, "metadata": {}}
     result = agent_graph.send_email_node(state)
     assert result["status"] == "error"
