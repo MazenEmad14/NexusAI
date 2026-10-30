@@ -70,6 +70,12 @@ class UserModel(BaseDataModel):
             logger.error(f"Error updating Google token for {email}: {e}")
             return False
 
+    async def set_timezone(self, email: str, timezone_name: str) -> bool:
+        result = await self.collection.update_one(
+            {"email": _normalize(email)}, {"$set": {"timezone": timezone_name}}
+        )
+        return result.matched_count > 0
+
     async def get_google_token(self, email: str) -> Optional[Dict[str, Any]]:
         """Retrieve per-user Google OAuth token dict from MongoDB.
 
@@ -84,13 +90,16 @@ class UserModel(BaseDataModel):
         try:
             cursor = self.collection.find(
                 {"google_token": {"$exists": True, "$ne": None}},
-                {"email": 1, "google_token": 1},
+                {"email": 1, "google_token": 1, "timezone": 1},
             )
             users = []
             async for doc in cursor:
                 token = decrypt_token(doc.get("google_token"))
                 if token:
-                    users.append({"user_id": str(doc["_id"]), "email": doc["email"], "google_token": token})
+                    users.append({
+                        "user_id": str(doc["_id"]), "email": doc["email"],
+                        "google_token": token, "timezone": doc.get("timezone"),
+                    })
             return users
         except Exception as e:
             logger.error(f"Error listing Google-connected users: {e}")

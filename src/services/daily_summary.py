@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
+from helpers.timezones import day_bounds, local_now, resolve_timezone
 from models.ReminderModel import ReminderModel
 from models.TaskModel import TaskModel
 
@@ -13,15 +14,18 @@ def _join_or_default(items: list[str], default: str) -> str:
 
 
 class DailySummaryService:
-    def __init__(self, calendar_service=None, gmail_service=None, generation_client=None, db_client=None):
+    def __init__(self, calendar_service=None, gmail_service=None, generation_client=None, db_client=None,
+                 timezone_name: str = None):
         self.calendar_service = calendar_service
         self.gmail_service = gmail_service
         self.generation_client = generation_client
         self.db_client = db_client
+        self.timezone_name = timezone_name
 
     async def collect(self, project_id: str = "default", user_id: str = "") -> dict:
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
+        # The user's own day, as aware datetimes. A naive server-local time with a "Z" appended was
+        # off by the server's UTC offset, so events near midnight landed on the wrong day.
+        today_start, today_end = day_bounds(self.timezone_name)
 
         # Sources that could not be read. Without this the briefing would claim "No meetings today"
         # when the calendar was merely unreachable or not connected.
@@ -34,8 +38,8 @@ class DailySummaryService:
             try:
                 request = self.calendar_service.service.events().list(
                     calendarId="primary",
-                    timeMin=today_start.isoformat() + "Z",
-                    timeMax=today_end.isoformat() + "Z",
+                    timeMin=today_start.isoformat(),
+                    timeMax=today_end.isoformat(),
                     singleEvents=True,
                     orderBy="startTime",
                 )
@@ -153,6 +157,8 @@ Mandatory Response Rules:
 {text["reminders_text"]}
 
 Draft a concise morning briefing."""
+        today = local_now(self.timezone_name).strftime("%A, %Y-%m-%d")
+        prompt = f"Today is {today} ({resolve_timezone(self.timezone_name).key}).\n\n" + prompt
 
         summary = ""
         if self.generation_client:

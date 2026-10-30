@@ -49,7 +49,8 @@ import {
   checkGoogleAuthStatus,
   transcribeAudio,
   generateSpeech,
-  openNotificationStream
+  openNotificationStream,
+  syncTimezone
 } from '../services/api';
 
 // Hooks
@@ -219,6 +220,9 @@ export default function WorkspacePage() {
       if (abortRef.current) abortRef.current.abort();
     };
   }, []);
+
+  /* ── tell the server our time zone (once per browser) ── */
+  useEffect(() => { syncTimezone(); }, []);
 
   /* ── SSE notifications ── */
   useEffect(() => {

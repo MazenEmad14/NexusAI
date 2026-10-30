@@ -299,3 +299,33 @@ def test_same_task_from_a_new_email_is_not_duplicated_and_users_stay_separate(mo
         assert task["deadline"] is not None
 
     _with_db(scenario)
+
+
+@needs_mongo
+def test_relative_deadlines_are_resolved_in_the_users_zone(monkeypatch):
+    from zoneinfo import ZoneInfo
+    from datetime import timezone
+
+    # 23:30 on 1 June in Auckland (UTC+12): the server may be on a different date entirely.
+    fixed = datetime(2026, 6, 1, 23, 30, tzinfo=ZoneInfo("Pacific/Auckland"))
+    asked_for = []
+
+    def fake_local_now(zone=None):
+        asked_for.append(zone)
+        return fixed
+
+    monkeypatch.setattr(agent_graph, "local_now", fake_local_now)
+    monkeypatch.setattr(agent_graph, "_gmail_for_state", lambda state=None: FakeGmail())
+    llm = GmailLLM(deadline="tomorrow")
+
+    async def scenario(db):
+        state = {"query": "mails", "user_id": "u1", "project_id": "default", "metadata": {},
+                 "chat_history": [], "user_timezone": "Pacific/Auckland"}
+        await agent_graph.search_gmail_node(state, generation_client=llm, db_client=db)
+        task = await db.tasks.find_one({"user_id": "u1"})
+        reminder = await db.reminders.find_one({"user_id": "u1"})
+        assert task["deadline"].date().isoformat() == "2026-06-02"
+        assert reminder["date"] == "2026-06-02"
+
+    _with_db(scenario)
+    assert asked_for and set(asked_for) == {"Pacific/Auckland"}

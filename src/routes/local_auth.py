@@ -2,11 +2,12 @@ import asyncio
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
 from helpers import auth_utils
 from helpers.config import get_settings
+from helpers.timezones import is_valid_timezone
 from helpers.validation import password_problem
 from models.RateLimitModel import RateLimitModel
 from models.UserModel import UserModel
@@ -32,6 +33,10 @@ class SignUpRequest(BaseModel):
 class SignInRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class TimezoneRequest(BaseModel):
+    timezone: str = Field(max_length=64)
 
 
 def _client_ip(request: Request) -> str:
@@ -158,3 +163,13 @@ async def signin(request: Request, body: SignInRequest):
             "is_google_connected": is_google_connected
         }
     }
+
+
+@local_auth_router.put("/timezone")
+async def set_timezone(request: Request, body: TimezoneRequest, current_user: dict = Depends(auth_utils.get_current_user)):
+    """Save the user's IANA time zone (the browser's zone), so "today" and "tomorrow" are theirs."""
+    if not is_valid_timezone(body.timezone):
+        raise HTTPException(status_code=400, detail="Unknown time zone")
+    user_model = await UserModel.create_instance(request.app.mongo_db)
+    await user_model.set_timezone(current_user["email"], body.timezone)
+    return {"timezone": body.timezone}

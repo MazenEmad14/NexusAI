@@ -1,7 +1,7 @@
 import asyncio
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import BaseModel, ValidationError
@@ -28,7 +28,9 @@ def _recency_score(value) -> float:
         dt = value
     else:
         try:
-            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is not None:  # compare in UTC; dropping the offset would shift the age by hours
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         except Exception as e:
             import logging
             logging.getLogger("uvicorn.error").warning(f"Error parsing date for recency score: {e}", exc_info=True)
