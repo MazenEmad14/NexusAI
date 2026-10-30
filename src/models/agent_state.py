@@ -8,6 +8,7 @@ class AgentState(TypedDict):
     # ---- User Input ----
     query: str                          # Raw user query text
     user_id: str                        # The user ID executing the request
+    user_email: str                     # The user's email (used for per-user Google token lookup)
     chat_history: List[Dict]            # Contextual memory accumulation
     file_path: Optional[str]            # Optional file path for data analysis
     chart_data: Optional[Dict[str, Any]] # Optional chart data for rendering interactive charts
@@ -32,3 +33,7 @@ class AgentState(TypedDict):
     # ---- Metadata ----
     metadata: Dict                      # Additional context: source, processing_time, etc.
     project_id: str                     # Current project context
+
+    # ---- Per-User Google Auth ----
+    google_token: Optional[Dict[str, Any]]  # Per-user OAuth2 token dict (from MongoDB)
+                                             # Replaces shared token.json — enables multi-user Google isolation

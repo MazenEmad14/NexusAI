@@ -418,6 +418,17 @@ export async function checkGoogleAuthStatus() {
   return request('/api/v1/auth/google/status');
 }
 
+/**
+ * Open the per-user notifications stream.
+ * EventSource cannot send an Authorization header, so a one-time ticket is
+ * requested first and passed as a query parameter.
+ * @returns {Promise<EventSource>}
+ */
+export async function openNotificationStream() {
+  const { ticket } = await request('/api/v1/agent/notifications/ticket', { method: 'POST', retries: 0 });
+  return new EventSource(`${API_BASE}/api/v1/agent/notifications?ticket=${encodeURIComponent(ticket)}`);
+}
+
 export async function signIn(email, password) {
   return request('/api/v1/auth/local/signin', {
     method: 'POST',

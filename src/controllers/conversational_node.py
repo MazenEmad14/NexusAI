@@ -117,18 +117,24 @@ async def conversational_node(state: AgentState, **kwargs) -> AgentState:
             "Match the language the user used."
         )
 
-        chat_history = [
+        llm_history = [
             generation_client.construct_prompt(
                 prompt=_SYSTEM_PERSONA,
                 role=generation_client.enums.SYSTEM.value,
             )
         ]
 
+        state_history = state.get("chat_history", [])
+        if state_history:
+            for turn in state_history[:-1]:  # exclude the last one which is the current query
+                role = generation_client.enums.USER.value if turn["role"] == "user" else generation_client.enums.ASSISTANT.value
+                llm_history.append(generation_client.construct_prompt(prompt=turn["content"], role=role))
+
         try:
             answer = await asyncio.to_thread(
                 generation_client.generate_text,
                 prompt=user_prompt,
-                chat_history=chat_history,
+                chat_history=llm_history,
                 max_output_tokens=150,
                 temperature=0.7,
             )

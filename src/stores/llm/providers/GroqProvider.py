@@ -16,7 +16,7 @@ class GroqProvider(LLMInterface):
         self.default_generation_temperature = default_generation_temperature     
         self.generation_model_id = None
         self.enums=GroqEnums
-        self.client = Groq(api_key=self.api_key)
+        self.client = Groq(api_key=self.api_key, timeout=30.0)
         self.logger = logging.getLogger(__name__)
 
     def set_generation_model(self, model_id: str):
