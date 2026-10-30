@@ -32,8 +32,8 @@ def _build_clients(token: dict):
 class NotificationEngine:
     """Delivers each user's daily summary once per day, after 08:00 server time."""
 
-    def __init__(self, app, poll_seconds: int = 60):
-        self.app = app
+    def __init__(self, services, poll_seconds: int = 60):
+        self.services = services
         self.poll_seconds = poll_seconds
         self._task = None
         self._stopped = asyncio.Event()
@@ -61,7 +61,7 @@ class NotificationEngine:
                 pass
 
     async def check_once(self):
-        user_model = await UserModel.create_instance(self.app.mongo_db)
+        user_model = await UserModel.create_instance(self.services.mongo_db)
         for user in await user_model.list_google_users():
             user_id = user["user_id"]
             # 08:00 and "today" are the user's own, not the server's.
@@ -77,14 +77,14 @@ class NotificationEngine:
         try:
             gmail, calendar, refreshed = await asyncio.to_thread(_build_clients, user["google_token"])
             if refreshed and refreshed != user["google_token"]:
-                user_model = await UserModel.create_instance(self.app.mongo_db)
+                user_model = await UserModel.create_instance(self.services.mongo_db)
                 await user_model.update_google_token(user["email"], refreshed)
 
             service = DailySummaryService(
                 calendar_service=calendar,
                 gmail_service=gmail,
-                generation_client=getattr(self.app, "generation_client", None),
-                db_client=getattr(self.app, "mongo_db", None),
+                generation_client=getattr(self.services, "generation_client", None),
+                db_client=getattr(self.services, "mongo_db", None),
                 timezone_name=user.get("timezone"),
             )
             summary = await service.generate(project_id="default", user_id=user_id)

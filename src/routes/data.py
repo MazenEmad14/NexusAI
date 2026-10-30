@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 import asyncio
 import os
 from helpers.config import get_settings, Settings
+from helpers.services import services_of
 from controllers import DataController, ProjectController, ProcessController
 import aiofiles
 from models import ResponseSignal
@@ -43,7 +44,7 @@ async def upload_data(request: Request, file: UploadFile,
         
     
     project_model = await ProjectModel.create_instance(
-        db_client=request.app.mongo_db
+        db_client=services_of(request).mongo_db
     )
 
     project = await project_model.get_project_or_create_one(
@@ -105,7 +106,7 @@ async def upload_data(request: Request, file: UploadFile,
 
     # store the assets into the database
     asset_model = await AssetModel.create_instance(
-        db_client=request.app.mongo_db
+        db_client=services_of(request).mongo_db
     )
 
     asset_resource = Asset(
@@ -144,7 +145,7 @@ async def process_endpoint(request: Request, process_request: ProcessRequest, pr
     do_reset = process_request.do_reset
 
     project_model = await ProjectModel.create_instance(
-        db_client=request.app.mongo_db
+        db_client=services_of(request).mongo_db
     )
 
     project = await project_model.get_project_or_create_one(
@@ -152,7 +153,7 @@ async def process_endpoint(request: Request, process_request: ProcessRequest, pr
     )
 
     asset_model = await AssetModel.create_instance(
-            db_client=request.app.mongo_db
+            db_client=services_of(request).mongo_db
         )
 
     project_files_ids = {}
@@ -204,7 +205,7 @@ async def process_endpoint(request: Request, process_request: ProcessRequest, pr
     process_controller = ProcessController(project_id=project_id)
 
     chunk_model = await ChunkModel.create_instance(
-                        db_client=request.app.mongo_db
+                        db_client=services_of(request).mongo_db
                     )
 
     if do_reset:

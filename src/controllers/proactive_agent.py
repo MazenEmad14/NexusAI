@@ -58,12 +58,12 @@ def _fetch_unread(token: dict):
     return emails, refreshed
 
 
-async def _evaluate_user(app, user: dict):
+async def _evaluate_user(services, user: dict):
     user_id = user["user_id"]
     emails, refreshed = await asyncio.to_thread(_fetch_unread, user["google_token"])
 
     if refreshed and refreshed != user["google_token"]:
-        user_model = await UserModel.create_instance(app.mongo_db)
+        user_model = await UserModel.create_instance(services.mongo_db)
         await user_model.update_google_token(user["email"], refreshed)
 
     seen = _seen_message_ids.setdefault(user_id, set())
@@ -74,7 +74,7 @@ async def _evaluate_user(app, user: dict):
         seen.clear()
     seen.update(e.get("message_id") for e in new_emails)
 
-    generation_client = getattr(app, "generation_client", None)
+    generation_client = getattr(services, "generation_client", None)
     if generation_client is None:
         return
 
@@ -103,10 +103,10 @@ async def _evaluate_user(app, user: dict):
         logger.info(f"Proactive message queued for user {user_id}")
 
 
-async def evaluate_inbox_and_notify(app):
+async def evaluate_inbox_and_notify(services):
     """Check each Google-connected user's inbox with that user's own token."""
     try:
-        user_model = await UserModel.create_instance(app.mongo_db)
+        user_model = await UserModel.create_instance(services.mongo_db)
         users = await user_model.list_google_users()
     except Exception:
         logger.error("Proactive agent could not list users", exc_info=True)
@@ -114,7 +114,7 @@ async def evaluate_inbox_and_notify(app):
 
     for user in users:
         try:
-            await _evaluate_user(app, user)
+            await _evaluate_user(services, user)
         except Exception as exc:
             # One user's expired token or API error must not stop the others.
             logger.warning(f"Proactive check failed for user {user['user_id']}: {exc}")

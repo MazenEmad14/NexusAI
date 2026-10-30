@@ -37,11 +37,12 @@ def build_app(google=None, with_db=True, graph="missing"):
     app.dependency_overrides[dashboard.get_current_user] = lambda: USER
     if google is not None:
         app.dependency_overrides[dashboard.get_google_clients] = lambda: google
-    if with_db:
-        app.mongo_db = MagicMock()
-    app.generation_client = FakeLLM()
-    if graph != "missing":
-        app.agent_graph = graph
+    if with_db:  # without it the app is "not ready": no services container at all
+        app.state.services = SimpleNamespace(
+            mongo_db=MagicMock(),
+            generation_client=FakeLLM(),
+            agent_graph=None if graph == "missing" else graph,
+        )
     return app
 
 
@@ -102,8 +103,10 @@ def test_unexpected_errors_are_500_and_never_leak_internal_text(monkeypatch):
     assert "secret" not in message and "/srv" not in message
 
 
-def test_missing_database_is_reported_as_unavailable():
-    assert_error_envelope(make_client(with_db=False).get("/api/v1/tasks"), 503)
+def test_a_service_that_is_not_ready_answers_503_in_the_standard_envelope():
+    client = make_client(with_db=False)
+    for route in ("/api/v1/tasks", "/api/v1/reminders", "/api/v1/queries", "/api/v1/memory/thread-1"):
+        assert_error_envelope(client.get(route), 503)
 
 
 def test_project_ids_are_validated():
@@ -238,7 +241,7 @@ def test_summary_says_which_sources_are_missing_instead_of_claiming_nothing_is_t
 
     response = TestClient(app).get("/api/v1/summary/daily")
     body = response.json()
-    prompt = app.generation_client.prompts[0]
+    prompt = app.state.services.generation_client.prompts[0]
 
     assert response.status_code == 200 and body["data"]["summary"] == "Your briefing."
     assert set(body["data"]["warnings"]) == {
@@ -292,10 +295,6 @@ def test_memory_reads_only_the_callers_namespaced_thread():
     assert body["data"]["chat_history"] == [{"role": "user", "content": "hi"}]
     assert seen == ["u1_thread-1"]  # another user's thread id can never be addressed
     assert client.get("/api/v1/memory/a%20b").status_code == 422
-
-
-def test_memory_without_an_assistant_is_unavailable_not_empty():
-    assert_error_envelope(make_client().get("/api/v1/memory/thread-1"), 503)
 
 
 def test_logout_clears_only_the_callers_token(monkeypatch):

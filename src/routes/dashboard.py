@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, Response
 from pymongo.errors import PyMongoError
 
 from helpers.auth_utils import get_current_user
+from helpers.services import services_of
 from helpers.exceptions import GoogleAuthRequiredException
 from models.UserModel import UserModel
 from services.daily_summary import DailySummaryService
@@ -78,11 +79,16 @@ def envelope(success_message: str, failure_message: str):
     return decorator
 
 
+def _services(request: Request):
+    """The running services; while the app is not ready this is the standard 503 envelope."""
+    try:
+        return services_of(request)
+    except HTTPException as exc:
+        raise DashboardError(exc.status_code, "The service is not ready")
+
+
 def _database(request: Request):
-    db = getattr(request.app, "mongo_db", None)
-    if db is None:
-        raise DashboardError(status.HTTP_503_SERVICE_UNAVAILABLE, "The database is not available")
-    return db
+    return _services(request).mongo_db
 
 
 # ─────────────────────────────────────────────
@@ -245,7 +251,7 @@ async def get_daily_summary(
     summary_service = DailySummaryService(
         calendar_service=google.calendar,
         gmail_service=google.gmail,
-        generation_client=request.app.generation_client,
+        generation_client=_services(request).generation_client,
         db_client=_database(request),
         timezone_name=current_user.get("timezone"),
     )
@@ -262,7 +268,7 @@ async def health_services(request: Request, google: GoogleClients = Depends(get_
     """Status of the services the UI shows. Google is reported for the logged-in user only."""
     google_ok = "ok" if google.state == "connected" else "error"
     return {
-        "database": "ok" if getattr(request.app, "mongo_db", None) is not None else "error",
+        "database": "ok" if getattr(getattr(request.app.state, "services", None), "mongo_db", None) is not None else "error",
         "gmail": "ok" if google.gmail else "error",
         "calendar": "ok" if google.calendar else "error",
         "google": google_ok,
@@ -280,9 +286,7 @@ async def get_thread_memory(
     current_user: dict = Depends(get_current_user),
 ):
     """Saved chat history of one of the caller's own threads."""
-    agent_graph = getattr(request.app, "agent_graph", None)
-    if not agent_graph:
-        raise DashboardError(status.HTTP_503_SERVICE_UNAVAILABLE, "The assistant is not available")
+    agent_graph = _services(request).agent_graph
 
     # Threads are namespaced by user id, exactly as in the agent routes, so only the caller's own
     # history can ever be read.

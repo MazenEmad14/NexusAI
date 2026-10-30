@@ -7,6 +7,7 @@ import logging
 import time
 
 from helpers.auth_utils import get_current_user
+from helpers.services import services_of
 from helpers.config import get_settings
 from models.UserModel import UserModel
 
@@ -26,7 +27,6 @@ SCOPES = [
 ]
 
 CREDENTIALS_PATH = Path(__file__).resolve().parent.parent / "credentials.json"
-ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 LOGIN_TTL_SECONDS = 300
 
 # In-flight OAuth logins keyed by the `state` value. Each entry owns its own Flow
@@ -70,7 +70,7 @@ async def google_login(origin: str = None, current_user: dict = Depends(get_curr
     _pending_logins[state] = {
         "flow": flow,
         "user_email": current_user["email"],
-        "origin": origin if origin in ALLOWED_ORIGINS else None,
+        "origin": origin if origin in get_settings().CORS_ORIGINS else None,
         "expires": time.time() + LOGIN_TTL_SECONDS,
     }
     return JSONResponse(content={"auth_url": authorization_url})
@@ -93,7 +93,7 @@ async def google_callback(request: Request, code: str, state: str):
         logger.error("Error exchanging Google OAuth code", exc_info=True)
         raise HTTPException(status_code=400, detail="Failed to complete Google authentication")
 
-    user_model = await UserModel.create_instance(request.app.mongo_db)
+    user_model = await UserModel.create_instance(services_of(request).mongo_db)
     saved = await user_model.update_google_token(pending["user_email"], token_dict)
     if not saved:
         logger.error(f"Failed to save Google token for {pending['user_email']}")
@@ -109,7 +109,7 @@ async def google_status(request: Request, current_user: dict = Depends(get_curre
     """Return whether the logged-in user has a usable Google connection."""
     from google.oauth2.credentials import Credentials
 
-    user_model = await UserModel.create_instance(request.app.mongo_db)
+    user_model = await UserModel.create_instance(services_of(request).mongo_db)
     token_dict = await user_model.get_google_token(current_user["email"])
     if not token_dict:
         return JSONResponse(content={"authenticated": False})
@@ -124,6 +124,6 @@ async def google_status(request: Request, current_user: dict = Depends(get_curre
 @auth_router.post("/google/disconnect")
 async def google_disconnect(request: Request, current_user: dict = Depends(get_current_user)):
     """Forget the logged-in user's Google token."""
-    user_model = await UserModel.create_instance(request.app.mongo_db)
+    user_model = await UserModel.create_instance(services_of(request).mongo_db)
     await user_model.update_google_token(current_user["email"], None)
     return JSONResponse(content={"message": "Google account disconnected"})

@@ -1,129 +1,148 @@
 import logging
 import sys
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from routes import base, data , nlp, agent, auth
-from routes import dashboard
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from motor.motor_asyncio import AsyncIOMotorClient
-from helpers.config import get_settings
-from stores.llm.LLMProviderFactory import LLMProviderFactory
-from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
-from stores.llm.templates.template_parser import TemplateParser
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from controllers.agent_graph import build_agent_graph
-from models.indexes import ensure_all_indexes
-from models.UserModel import UserModel
-from stores.checkpoint.MongoCheckpointer import MongoCheckpointer
-from services.notification_engine import NotificationEngine
 from controllers.proactive_agent import evaluate_inbox_and_notify
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from helpers.config import get_settings
+from helpers.services import Services
+from models.UserModel import UserModel
+from models.indexes import ensure_all_indexes
+from routes import agent, auth, base, dashboard, data, local_auth, nlp
+from services.notification_engine import NotificationEngine
+from stores.checkpoint.MongoCheckpointer import MongoCheckpointer
+from stores.llm.LLMProviderFactory import LLMProviderFactory
+from stores.llm.templates.template_parser import TemplateParser
+from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
 
 logger = logging.getLogger("uvicorn.error")
 
 # Agent conversations idle for longer than this are deleted from the checkpoint store.
 THREAD_RETENTION_DAYS = 30
 
-app = FastAPI()
+
+async def _close_quietly(name: str, close):
+    """Shutdown must reach every resource: one that fails to close is logged, not fatal."""
+    try:
+        await close()
+    except Exception:
+        logger.warning(f"Failed to close {name}", exc_info=True)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Build every service on startup and release them in reverse order on shutdown.
+
+    The exit stack unwinds whatever was already started even if a later step raises, so a failed
+    startup does not leave a database connection, scheduler or storage lock behind.
+    """
+    settings = get_settings()
+
+    async with AsyncExitStack() as stack:
+        # 1. MongoDB: agent data, users, checkpoints
+        mongo_conn = AsyncIOMotorClient(settings.MONGODB_URL)
+        stack.callback(mongo_conn.close)
+        mongo_db = mongo_conn[settings.MONGODB_DATABASE]
+        await ensure_all_indexes(mongo_db)
+        await UserModel(mongo_db).normalize_existing_emails()
+
+        # 2. PostgreSQL engine (connects lazily; see REFACTOR_PLAN.md 3.5 about whether it is still needed)
+        db_engine = create_async_engine(
+            f"postgresql+asyncpg://{settings.POSTGRES_USERNAME}:{settings.POSTGRES_PASSWORD}"
+            f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_MAIN_DATABASE}"
+        )
+        stack.push_async_callback(lambda: _close_quietly("the PostgreSQL engine", db_engine.dispose))
+        db_client = sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+        # 3. LLM clients
+        llm_factory = LLMProviderFactory(settings)
+        generation_client = llm_factory.create(provider=settings.GENERATION_BACKEND)
+        generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
+        stack.push_async_callback(lambda: _close_quietly("the generation client", generation_client.aclose))
+
+        embedding_client = llm_factory.create(provider=settings.EMBEDDING_BACKEND)
+        embedding_client.set_embedding_model(
+            model_id=settings.EMBEDDING_MODEL_ID, embedding_size=settings.EMBEDDING_MODEL_SIZE
+        )
+        stack.push_async_callback(lambda: _close_quietly("the embedding client", embedding_client.aclose))
+
+        # 4. Vector database
+        vectordb_client = VectorDBProviderFactory(settings).create(provider=settings.VECTOR_DB_BACKEND)
+        vectordb_client.connect()
+        stack.callback(vectordb_client.disconnect)
+
+        template_parser = TemplateParser(language=settings.PRIMARY_LANG, default_language=settings.DEFAULT_LANG)
+
+        # 5. The agent, with a persistent checkpointer so pending approvals and chat history
+        # survive restarts.
+        checkpointer = MongoCheckpointer(mongo_db)
+        await checkpointer.setup()
+        agent_graph = build_agent_graph(
+            db_client=mongo_db,
+            generation_client=generation_client,
+            embedding_client=embedding_client,
+            vectordb_client=vectordb_client,
+            template_parser=template_parser,
+            checkpointer=checkpointer,
+        )
+
+        services = Services(
+            mongo_conn=mongo_conn,
+            mongo_db=mongo_db,
+            db_engine=db_engine,
+            db_client=db_client,
+            generation_client=generation_client,
+            embedding_client=embedding_client,
+            vectordb_client=vectordb_client,
+            template_parser=template_parser,
+            checkpointer=checkpointer,
+            agent_graph=agent_graph,
+        )
+
+        # 6. Background work
+        services.notification_engine = NotificationEngine(services)
+        services.notification_engine.start()
+        stack.push_async_callback(services.notification_engine.stop)
+
+        services.scheduler = AsyncIOScheduler()
+        services.scheduler.add_job(evaluate_inbox_and_notify, "interval", minutes=1, args=[services])
+        services.scheduler.add_job(checkpointer.purge_stale_threads, "interval", hours=24, args=[THREAD_RETENTION_DAYS])
+        services.scheduler.start()
+        stack.callback(services.scheduler.shutdown)
+
+        # Requests are only served once everything above exists.
+        app.state.services = services
+        try:
+            yield
+        finally:
+            app.state.services = None
+
+
+app = FastAPI(lifespan=lifespan)
 
 # ── CORS Middleware ──
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-    ],
+    allow_origins=get_settings().CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def startup_db_client():
-    settings = get_settings()
-
-    # 1. MongoDB Connection (for Secretary Collections)
-    # Using default local connection for now if URL not in settings
-    mongodb_url = getattr(settings, "MONGODB_URL", "mongodb://localhost:27017/")
-    app.mongo_conn = AsyncIOMotorClient(mongodb_url)
-    app.mongo_db = app.mongo_conn["depi"]
-    await ensure_all_indexes(app.mongo_db)
-    await UserModel(app.mongo_db).normalize_existing_emails()
-
-    # 2. PostgreSQL Connection (for existing RAG data if needed)
-    postgres_conn = f"postgresql+asyncpg://{settings.POSTGRES_USERNAME}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_MAIN_DATABASE}"
-    app.db_engine = create_async_engine(postgres_conn)
-    app.db_client = sessionmaker(
-        app.db_engine, class_=AsyncSession, expire_on_commit=False
-    )
-    
-    llm_provider_factory = LLMProviderFactory(settings)
-    vectordb_provider_factory = VectorDBProviderFactory(settings)
-
-    # 3. Generation client
-    app.generation_client = llm_provider_factory.create(provider=settings.GENERATION_BACKEND)
-    app.generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
-
-    # 4. Embedding client
-    app.embedding_client = llm_provider_factory.create(provider=settings.EMBEDDING_BACKEND)
-    app.embedding_client.set_embedding_model(model_id=settings.EMBEDDING_MODEL_ID,
-                                             embedding_size=settings.EMBEDDING_MODEL_SIZE)
-    # 5. Vector DB client
-    app.vectordb_client = vectordb_provider_factory.create(provider=settings.VECTOR_DB_BACKEND)
-    app.vectordb_client.connect()
-    
-    # 6. Template Parser
-    app.template_parser = TemplateParser(
-        language=settings.PRIMARY_LANG,
-        default_language=settings.DEFAULT_LANG)
-
-    # 7. Compile LangGraph Agent with a persistent (MongoDB) checkpointer, so pending
-    # approvals and chat history survive restarts.
-    app.checkpointer = MongoCheckpointer(app.mongo_db)
-    await app.checkpointer.setup()
-    app.agent_graph = build_agent_graph(
-        db_client=app.mongo_db,
-        generation_client=app.generation_client,
-        embedding_client=app.embedding_client,
-        vectordb_client=app.vectordb_client,
-        template_parser=app.template_parser,
-        checkpointer=app.checkpointer,
-    )
-
-    app.notification_engine = NotificationEngine(app)
-    app.notification_engine.start()
-
-    # 8. Proactive Agent Scheduler
-    app.scheduler = AsyncIOScheduler()
-    app.scheduler.add_job(evaluate_inbox_and_notify, 'interval', minutes=1, args=[app])
-    app.scheduler.add_job(app.checkpointer.purge_stale_threads, 'interval', hours=24, args=[THREAD_RETENTION_DAYS])
-    app.scheduler.start()
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    if hasattr(app, "scheduler"):
-        app.scheduler.shutdown()
-    if hasattr(app, "notification_engine"):
-        await app.notification_engine.stop()
-    for client in (app.generation_client, app.embedding_client):
-        try:
-            await client.aclose()
-        except Exception:
-            logger.warning("Failed to close an LLM client", exc_info=True)
-    app.mongo_conn.close()
-    await app.db_engine.dispose()
-    app.vectordb_client.disconnect()
-
-
-from routes.local_auth import local_auth_router
 app.include_router(base.base_router)
 app.include_router(auth.auth_router)
-app.include_router(local_auth_router)
+app.include_router(local_auth.local_auth_router)
 app.include_router(data.data_router)
 app.include_router(nlp.nlp_router)
 app.include_router(agent.agent_router)

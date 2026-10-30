@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
 from helpers import auth_utils
+from helpers.services import services_of
 from helpers.config import get_settings
 from helpers.timezones import is_valid_timezone
 from helpers.validation import password_problem
@@ -64,10 +65,7 @@ async def _guard_signup(limits: RateLimitModel, request: Request) -> None:
 
 @local_auth_router.post("/signup")
 async def signup(request: Request, body: SignUpRequest):
-    if not hasattr(request.app, "mongo_db"):
-        raise HTTPException(status_code=500, detail="Database not initialized")
-
-    limits = await RateLimitModel.create_instance(request.app.mongo_db)
+    limits = await RateLimitModel.create_instance(services_of(request).mongo_db)
     await _guard_signup(limits, request)
 
     email = auth_utils.normalize_email(str(body.email))
@@ -78,7 +76,7 @@ async def signup(request: Request, body: SignUpRequest):
     if problem:
         raise HTTPException(status_code=400, detail=problem)
 
-    user_model = await UserModel.create_instance(request.app.mongo_db)
+    user_model = await UserModel.create_instance(services_of(request).mongo_db)
     if await user_model.get_user_by_email(email):
         raise HTTPException(status_code=409, detail="Email already exists")
 
@@ -112,16 +110,13 @@ async def signup(request: Request, body: SignUpRequest):
 
 @local_auth_router.post("/signin")
 async def signin(request: Request, body: SignInRequest):
-    if not hasattr(request.app, "mongo_db"):
-        raise HTTPException(status_code=500, detail="Database not initialized")
-
     settings = get_settings()
     window = settings.LOGIN_WINDOW_MINUTES * 60
     email = auth_utils.normalize_email(str(body.email))
     ip = _client_ip(request)
     ip_key, account_key = f"login-ip:{ip}", f"login:{email}:{ip}"
 
-    limits = await RateLimitModel.create_instance(request.app.mongo_db)
+    limits = await RateLimitModel.create_instance(services_of(request).mongo_db)
 
     # Refuse before doing any work once a limit is reached. The account counter is per client
     # address, so a stranger cannot lock the real owner out of their own account.
@@ -130,7 +125,7 @@ async def signin(request: Request, body: SignInRequest):
         if count >= limit:
             raise _too_many(ends, "sign-in")
 
-    user_model = await UserModel.create_instance(request.app.mongo_db)
+    user_model = await UserModel.create_instance(services_of(request).mongo_db)
     user_data = await user_model.get_user_by_email(email)
 
     # Always run one bcrypt check, against a dummy hash if the account does not exist, so the
@@ -170,6 +165,6 @@ async def set_timezone(request: Request, body: TimezoneRequest, current_user: di
     """Save the user's IANA time zone (the browser's zone), so "today" and "tomorrow" are theirs."""
     if not is_valid_timezone(body.timezone):
         raise HTTPException(status_code=400, detail="Unknown time zone")
-    user_model = await UserModel.create_instance(request.app.mongo_db)
+    user_model = await UserModel.create_instance(services_of(request).mongo_db)
     await user_model.set_timezone(current_user["email"], body.timezone)
     return {"timezone": body.timezone}
