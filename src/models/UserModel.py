@@ -71,13 +71,13 @@ class UserModel(BaseDataModel):
             return False
 
     async def get_google_token(self, email: str) -> Optional[Dict[str, Any]]:
-        """Retrieve per-user Google OAuth token dict from MongoDB."""
-        try:
-            user = await self.collection.find_one({"email": email}, {"google_token": 1})
-            return decrypt_token(user.get("google_token")) if user else None
-        except Exception as e:
-            logger.error(f"Error fetching Google token for {email}: {e}")
-            return None
+        """Retrieve per-user Google OAuth token dict from MongoDB.
+
+        None means the user has no (readable) token. Database errors propagate, so an outage is
+        not mistaken for "Google not connected".
+        """
+        user = await self.collection.find_one({"email": _normalize(email)}, {"google_token": 1})
+        return decrypt_token(user.get("google_token")) if user else None
 
     async def list_google_users(self) -> list[Dict[str, Any]]:
         """Users who connected Google, with their decrypted token (for background jobs)."""

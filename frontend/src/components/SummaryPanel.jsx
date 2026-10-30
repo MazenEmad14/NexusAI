@@ -7,6 +7,7 @@ import { fetchDailySummary } from '../services/api';
 
 export default function SummaryPanel({ projectId = 'default' }) {
   const [summary, setSummary] = useState('');
+  const [warnings, setWarnings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -16,6 +17,7 @@ export default function SummaryPanel({ projectId = 'default' }) {
     try {
       const data = await fetchDailySummary(projectId);
       setSummary(data?.data?.summary || data?.summary || '');
+      setWarnings(data?.data?.warnings || []);
     } catch (err) {
       setError(err.message || 'Failed to generate summary');
     } finally {
@@ -51,6 +53,13 @@ export default function SummaryPanel({ projectId = 'default' }) {
           <ReactMarkdown>{summary}</ReactMarkdown>
         </div>
       </div>
+      {warnings.length > 0 && (
+        <ul className="mt-3 space-y-1 text-xs text-amber-300/80">
+          {warnings.map((warning) => (
+            <li key={warning}>⚠️ {warning}</li>
+          ))}
+        </ul>
+      )}
     </DashboardPanel>
   );
 }
