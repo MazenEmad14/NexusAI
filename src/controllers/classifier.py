@@ -287,7 +287,8 @@ RESPOND WITH JSON ONLY! NO TEXT!"""
         from services.retrieval import detect_priority
         return detect_priority(text)
 
-    def extract_action_details(self, query: str, action_type: str, chat_history: list = None, available_files: str = "") -> dict:
+    def extract_action_details(self, query: str, action_type: str, chat_history: list = None, available_files: str = "",
+                               timezone_name: str = None) -> dict:
         """
         Extract structured details from the query based on the action type.
         """
@@ -295,7 +296,7 @@ RESPOND WITH JSON ONLY! NO TEXT!"""
         if action_type == "send_email":
             return self._extract_email_details(query, chat_history)
         elif action_type == "calendar":
-            return self._extract_meeting_details(query, chat_history)
+            return self._extract_meeting_details(query, chat_history, timezone_name)
         elif action_type == "reminder":
             return self._extract_reminder_details(query, chat_history)
         elif action_type == "data_analysis":
@@ -318,9 +319,10 @@ If any field is unclear, use a reasonable default."""
 
         return self._extract_with_llm(query, system_prompt, chat_history)
 
-    def _extract_meeting_details(self, query: str, chat_history: list = None) -> dict:
-        import datetime
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    def _extract_meeting_details(self, query: str, chat_history: list = None, timezone_name: str = None) -> dict:
+        from helpers.timezones import local_now, resolve_timezone
+        # The current time in the user's zone, so "tomorrow" is the user's tomorrow, not the server's.
+        now = f"{local_now(timezone_name).strftime('%Y-%m-%d %H:%M')} ({resolve_timezone(timezone_name).key})"
         system_prompt = f"""Extract meeting/calendar event details from the user's request.
 Resolve any pronouns or references ("it", "tomorrow", "the meeting") using the conversation history.
 

@@ -435,6 +435,29 @@ export async function openNotificationStream() {
   return new EventSource(`${API_BASE}/api/v1/agent/notifications?ticket=${encodeURIComponent(ticket)}`);
 }
 
+/**
+ * Tell the server which time zone the user is in, so "today", "tomorrow" and the 8am briefing
+ * are theirs. Sent only when it changed since the last time on this browser.
+ */
+export async function syncTimezone() {
+  let zone;
+  try {
+    zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return;
+  }
+  if (!zone) return;
+  try {
+    if (localStorage.getItem('tz_synced') === zone) return;
+  } catch { /* storage unavailable: just send it */ }
+  try {
+    await request('/api/v1/auth/local/timezone', { method: 'PUT', body: JSON.stringify({ timezone: zone }), retries: 0 });
+    try { localStorage.setItem('tz_synced', zone); } catch { /* ignore */ }
+  } catch {
+    // Not critical: the server falls back to its default zone.
+  }
+}
+
 export async function signIn(email, password) {
   return request('/api/v1/auth/local/signin', {
     method: 'POST',

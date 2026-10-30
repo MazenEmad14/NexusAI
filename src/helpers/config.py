@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     VECTOR_DB_DISTANCE_METHOD: str = None
 
     JWT_SECRET_KEY: str
+    # Zone used for users who have not set their own (IANA name)
+    DEFAULT_TIMEZONE: str = "Africa/Cairo"
     # Sign-in / sign-up throttling (counted in MongoDB, so it holds across workers)
     LOGIN_WINDOW_MINUTES: int = 15
     LOGIN_MAX_FAILURES_PER_ACCOUNT: int = 5   # per email + client address

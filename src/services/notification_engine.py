@@ -1,8 +1,9 @@
 import asyncio
 import logging
-from datetime import datetime, time as datetime_time
+from datetime import time as datetime_time
 
 from helpers.event_bus import publish
+from helpers.timezones import local_now
 from models.UserModel import UserModel
 from services.daily_summary import DailySummaryService
 from stores.calendar.CalendarService import CalendarService
@@ -60,14 +61,12 @@ class NotificationEngine:
                 pass
 
     async def check_once(self):
-        now = datetime.now()
-        if now.time() < datetime_time(hour=8):
-            return
-
         user_model = await UserModel.create_instance(self.app.mongo_db)
         for user in await user_model.list_google_users():
             user_id = user["user_id"]
-            if self._last_summary_date.get(user_id) == now.date():
+            # 08:00 and "today" are the user's own, not the server's.
+            now = local_now(user.get("timezone"))
+            if now.time() < datetime_time(hour=8) or self._last_summary_date.get(user_id) == now.date():
                 continue
             # Mark before launching so a slow summary is not started again on the next tick.
             self._last_summary_date[user_id] = now.date()
@@ -86,6 +85,7 @@ class NotificationEngine:
                 gmail_service=gmail,
                 generation_client=getattr(self.app, "generation_client", None),
                 db_client=getattr(self.app, "mongo_db", None),
+                timezone_name=user.get("timezone"),
             )
             summary = await service.generate(project_id="default", user_id=user_id)
             await publish(user_id, summary["summary"])

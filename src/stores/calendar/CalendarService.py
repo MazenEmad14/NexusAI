@@ -2,13 +2,14 @@ import os
 import json
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from helpers.exceptions import GoogleAuthRequiredException
+from helpers.timezones import local_now, resolve_timezone
 from helpers.validation import parse_recipients
 import httplib2
 import google_auth_httplib2
@@ -123,7 +124,8 @@ class CalendarService:
     def create_event(self, title: str, date: str, time: str,
                      attendees: List[str] = None,
                      duration_hours: int = 1,
-                     description: str = "") -> Optional[Dict]:
+                     description: str = "",
+                     time_zone: Optional[str] = None) -> Optional[Dict]:
         """
         Create a calendar event.
         
@@ -134,6 +136,7 @@ class CalendarService:
             attendees: List of email addresses
             duration_hours: Duration in hours (default 1)
             description: Event description
+            time_zone: IANA zone the date and time are in (the user's zone; default if not given)
             
         Returns:
             Dict with event details or None on error
@@ -144,7 +147,8 @@ class CalendarService:
 
         try:
             # Provide fallbacks if LLM fails to extract date or time
-            date_str = date.strip() if date and date.strip() else datetime.now().strftime("%Y-%m-%d")
+            zone = resolve_timezone(time_zone)
+            date_str = date.strip() if date and date.strip() else local_now(time_zone).strftime("%Y-%m-%d")
             time_str = time.strip() if time and time.strip() else "12:00"
 
             # Parse date and time
@@ -156,11 +160,11 @@ class CalendarService:
                 'description': description,
                 'start': {
                     'dateTime': start_datetime.isoformat(),
-                    'timeZone': 'Africa/Cairo',
+                    'timeZone': zone.key,
                 },
                 'end': {
                     'dateTime': end_datetime.isoformat(),
-                    'timeZone': 'Africa/Cairo',
+                    'timeZone': zone.key,
                 },
             }
 
@@ -194,42 +198,36 @@ class CalendarService:
             logger.error(f"Error creating calendar event: {e}")
             return None
 
-    def list_events(self, max_results: int = 10, 
+    def list_events(self, max_results: int = 10,
                     days_ahead: int = 7) -> List[Dict]:
-        """List upcoming calendar events."""
+        """List upcoming calendar events, from now until `days_ahead` days from now.
+
+        Raises on API errors: an empty list must mean "no events", not "Calendar failed".
+        """
         if not self.service:
             return []
 
-        try:
-            now = datetime.utcnow().isoformat() + 'Z'
-            time_max = (datetime.utcnow() + timedelta(days=days_ahead)).isoformat() + 'Z'
+        now_utc = datetime.now(timezone.utc)
+        with self.lock:
+            events_result = self.service.events().list(
+                calendarId='primary',
+                timeMin=now_utc.isoformat(),
+                timeMax=(now_utc + timedelta(days=days_ahead)).isoformat(),
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
 
-            with self.lock:
-                events_result = self.service.events().list(
-                    calendarId='primary',
-                    timeMin=now,
-                    timeMax=time_max,
-                    maxResults=max_results,
-                    singleEvents=True,
-                    orderBy='startTime'
-                ).execute()
-
-            events = events_result.get('items', [])
-
-            return [
-                {
-                    "event_id": event.get('id', ''),
-                    "title": event.get('summary', 'No Title'),
-                    "start": event.get('start', {}).get('dateTime', event.get('start', {}).get('date', '')),
-                    "end": event.get('end', {}).get('dateTime', event.get('end', {}).get('date', '')),
-                    "link": event.get('htmlLink', ''),
-                }
-                for event in events
-            ]
-
-        except Exception as e:
-            logger.error(f"Error listing calendar events: {e}")
-            return []
+        return [
+            {
+                "event_id": event.get('id', ''),
+                "title": event.get('summary', 'No Title'),
+                "start": event.get('start', {}).get('dateTime', event.get('start', {}).get('date', '')),
+                "end": event.get('end', {}).get('dateTime', event.get('end', {}).get('date', '')),
+                "link": event.get('htmlLink', ''),
+            }
+            for event in events_result.get('items', [])
+        ]
 
     def delete_event(self, event_id: str) -> bool:
         """Delete a calendar event by ID."""

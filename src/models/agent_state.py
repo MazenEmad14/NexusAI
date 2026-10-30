@@ -8,6 +8,7 @@ class AgentState(TypedDict):
     # ---- User Input ----
     query: str                          # Raw user query text
     user_id: str                        # The user ID executing the request
+    user_timezone: str                  # IANA zone of the user ("" = deployment default)
     user_email: str                     # The user's email (used for per-user Google token lookup)
     chat_history: List[Dict]            # Contextual memory accumulation
     file_path: Optional[str]            # Optional file path for data analysis

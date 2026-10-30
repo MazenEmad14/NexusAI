@@ -30,6 +30,7 @@ from controllers.gmail_query import build_gmail_query
 from helpers.exceptions import GoogleAuthRequiredException
 from helpers.google_context import get_google_token, update_google_token
 from helpers.project_scope import scoped_project_id
+from helpers.timezones import local_now
 from helpers.validation import parse_recipients
 from stores.gmail.GmailService import GmailService
 from stores.calendar.CalendarService import CalendarService
@@ -361,7 +362,8 @@ async def _store_tasks_from_emails(state: AgentState, db_client, generation_clie
             source_email_id=only_email.get("message_id") if only_email else None,
             source_subject=only_email.get("subject") if only_email else None,
         )
-        parsed = parse_deadline(data.get("deadline"))
+        # "tomorrow" means tomorrow where the user is, not where the server is.
+        parsed = parse_deadline(data.get("deadline"), now=local_now(state.get("user_timezone")).replace(tzinfo=None))
         if parsed:
             task.deadline = parsed[0]
 
@@ -400,7 +402,13 @@ async def search_gmail_node(state: AgentState, **kwargs) -> AgentState:
         return state
 
     plan = await build_gmail_query(generation_client, state["query"], state.get("chat_history", []))
-    emails = await asyncio.to_thread(gmail_service.search_emails, query=plan.query, max_results=plan.max_results)
+    try:
+        emails = await asyncio.to_thread(gmail_service.search_emails, query=plan.query, max_results=plan.max_results)
+    except Exception:
+        logger.error("Gmail search failed", exc_info=True)
+        state["result"] = ResponseFormatter.format_error("I couldn't reach Gmail right now. Please try again in a moment.")
+        state["status"] = "error"
+        return state
     state["emails"] = emails
 
     if not emails:
@@ -436,7 +444,8 @@ def extract_action_details_node(state: AgentState, **kwargs) -> AgentState:
         query=state["query"],
         action_type=state["action_type"],
         chat_history=state.get("chat_history", []),
-        available_files=state.get("metadata", {}).get("available_files", "")
+        available_files=state.get("metadata", {}).get("available_files", ""),
+        timezone_name=state.get("user_timezone") or None,
     )
     
     # Priority 5 Fix: Ensure action_details are never empty for reminder HITL
@@ -506,6 +515,7 @@ def create_calendar_event_node(state: AgentState, **kwargs) -> AgentState:
         date=details.get("date", ""),
         time=details.get("time", "12:00"),
         attendees=details.get("attendees", []),
+        time_zone=state.get("user_timezone") or None,
     )
 
     if result:
@@ -565,6 +575,7 @@ async def daily_summary_node(state: AgentState, **kwargs) -> AgentState:
         gmail_service=gmail_service,
         generation_client=generation_client,
         db_client=db_client,
+        timezone_name=state.get("user_timezone") or None,
     )
     summary_payload = await summary_service.generate(
         project_id=state.get("project_id", "default"),
@@ -811,12 +822,14 @@ def build_agent_graph(
     return compiled_graph
 
 
-def create_initial_state(query: str, project_id: str = "default", file_path: str = None, user_id: str = "") -> AgentState:
+def create_initial_state(query: str, project_id: str = "default", file_path: str = None, user_id: str = "",
+                         timezone_name: str = "") -> AgentState:
     """Create the initial state for a new agent invocation."""
     return AgentState(
         query=query,
         user_id=user_id,
         user_email="",
+        user_timezone=timezone_name or "",
         request_type="",
         action_type="",
         priority="medium",

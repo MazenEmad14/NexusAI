@@ -249,3 +249,24 @@ def test_sign_up_then_sign_in_round_trip(client):
     assert _signup(client).status_code == 200
     token = _signin(client).json()["access_token"]
     assert client.get("/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+# ── time zone preference (plan 2.6) ──────────────────────────────────────────
+@needs_mongo
+def test_the_users_time_zone_is_saved_and_validated(client):
+    token = _signup(client).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    saved = client.put("/api/v1/auth/local/timezone", json={"timezone": "Asia/Tokyo"}, headers=headers)
+    assert saved.status_code == 200 and saved.json() == {"timezone": "Asia/Tokyo"}
+    assert _run(client, lambda: client.db().users.find_one({"email": "alice@example.com"}))["timezone"] == "Asia/Tokyo"
+
+    for bad in ("Mars/Base", "../etc/passwd", "", "x" * 100):
+        response = client.put("/api/v1/auth/local/timezone", json={"timezone": bad}, headers=headers)
+        assert response.status_code in (400, 422), bad
+    assert _run(client, lambda: client.db().users.find_one({"email": "alice@example.com"}))["timezone"] == "Asia/Tokyo"
+
+
+@needs_mongo
+def test_setting_a_time_zone_requires_signing_in(client):
+    assert client.put("/api/v1/auth/local/timezone", json={"timezone": "Asia/Tokyo"}).status_code in (401, 403)

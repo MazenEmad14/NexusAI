@@ -141,32 +141,29 @@ class GmailService:
         """
         Search emails matching a query string.
         Query examples: "from:ahmed", "subject:project update", "is:unread"
+
+        Raises on API errors: an empty list must mean "no matching emails", not "Gmail failed".
         """
         if not self.service:
             logger.error("Gmail service not authenticated")
             return []
 
-        try:
-            with self.lock:
-                results = self.service.users().messages().list(
-                    userId='me', q=query, maxResults=max_results
-                ).execute()
+        with self.lock:
+            results = self.service.users().messages().list(
+                userId='me', q=query, maxResults=max_results
+            ).execute()
 
-            messages = results.get('messages', [])
-            if not messages:
-                return []
-
-            email_list = []
-            for msg_info in messages:
-                email_data = self.get_email(msg_info['id'])
-                if email_data:
-                    email_list.append(email_data)
-
-            return email_list
-
-        except Exception as e:
-            logger.error(f"Error searching Gmail: {e}")
+        messages = results.get('messages', [])
+        if not messages:
             return []
+
+        email_list = []
+        for msg_info in messages:
+            email_data = self.get_email(msg_info['id'])
+            if email_data:
+                email_list.append(email_data)
+
+        return email_list
 
     def get_email(self, message_id: str) -> Optional[Dict]:
         """Fetch a single email by its message ID."""

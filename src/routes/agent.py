@@ -107,6 +107,7 @@ async def _build_initial_state(request: Request, chat_request: ChatRequest, curr
         project_id=chat_request.project_id,
         file_path=chat_request.file_path,
         user_id=str(current_user["_id"]),
+        timezone_name=current_user.get("timezone") or "",
     )
     initial_state["chat_history"] = existing_history
     if existing_history and state_snapshot and state_snapshot.values:

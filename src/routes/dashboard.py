@@ -247,6 +247,7 @@ async def get_daily_summary(
         gmail_service=google.gmail,
         generation_client=request.app.generation_client,
         db_client=_database(request),
+        timezone_name=current_user.get("timezone"),
     )
     payload = await summary_service.generate(project_id=project_id, user_id=str(current_user["_id"]))
     return {"summary": payload["summary"], "warnings": payload.get("warnings", [])}
