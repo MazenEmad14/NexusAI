@@ -9,6 +9,9 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from helpers.exceptions import GoogleAuthRequiredException
+from helpers.validation import parse_recipients
+import httplib2
+import google_auth_httplib2
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -67,7 +70,9 @@ class CalendarService:
             else:
                 raise GoogleAuthRequiredException("Google token is invalid. Please reconnect your Google account.")
 
-        self.service = build('calendar', 'v3', credentials=creds)
+        http = httplib2.Http(timeout=30.0)
+        authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+        self.service = build('calendar', 'v3', http=authed_http)
         logger.info("Google Calendar API authenticated successfully (per-user DB token)")
 
         # Return refreshed token dict so caller can save it back to DB
@@ -105,7 +110,9 @@ class CalendarService:
             except Exception as e:
                 logger.error(f"Calendar: Failed to save token: {e}")
 
-        self.service = build('calendar', 'v3', credentials=creds)
+        http = httplib2.Http(timeout=30.0)
+        authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+        self.service = build('calendar', 'v3', http=authed_http)
         logger.info("Google Calendar API authenticated successfully")
         return True
 
@@ -158,10 +165,9 @@ class CalendarService:
             }
 
             if attendees:
-                event_body['attendees'] = [
-                    {'email': email} for email in attendees
-                    if '@' in email
-                ]
+                # Only well-formed addresses: sendUpdates='all' emails every attendee.
+                valid = [a for a in attendees if parse_recipients([a])]
+                event_body['attendees'] = [{'email': email.strip()} for email in valid]
 
             with self.lock:
                 event = self.service.events().insert(

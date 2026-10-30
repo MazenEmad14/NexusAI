@@ -2,19 +2,41 @@ import asyncio
 import logging
 from datetime import datetime, time as datetime_time
 
+from helpers.event_bus import publish
+from models.UserModel import UserModel
 from services.daily_summary import DailySummaryService
-from services.retrieval import detect_priority
+from stores.calendar.CalendarService import CalendarService
+from stores.gmail.GmailService import GmailService
 
 logger = logging.getLogger("uvicorn.error")
 
 
+def _build_clients(token: dict):
+    """Per-user Google clients plus a refreshed token dict (if any) for persistence."""
+    gmail = calendar = None
+    refreshed = None
+    try:
+        gmail = GmailService()
+        refreshed = gmail.authenticate_from_dict(token)
+    except Exception:
+        gmail = None
+    try:
+        calendar = CalendarService()
+        refreshed = calendar.authenticate_from_dict(token) or refreshed
+    except Exception:
+        calendar = None
+    return gmail, calendar, refreshed
+
+
 class NotificationEngine:
+    """Delivers each user's daily summary once per day, after 08:00 server time."""
+
     def __init__(self, app, poll_seconds: int = 60):
         self.app = app
         self.poll_seconds = poll_seconds
         self._task = None
         self._stopped = asyncio.Event()
-        self._last_daily_summary_date = None
+        self._last_summary_date: dict[str, object] = {}
 
     def start(self):
         if not self._task:
@@ -39,25 +61,36 @@ class NotificationEngine:
 
     async def check_once(self):
         now = datetime.now()
-        if now.time() >= datetime_time(hour=8) and self._last_daily_summary_date != now.date():
-            summary_service = DailySummaryService(
-                calendar_service=getattr(self.app, "calendar_service", None),
-                gmail_service=getattr(self.app, "gmail_service", None),
+        if now.time() < datetime_time(hour=8):
+            return
+
+        user_model = await UserModel.create_instance(self.app.mongo_db)
+        for user in await user_model.list_google_users():
+            user_id = user["user_id"]
+            if self._last_summary_date.get(user_id) == now.date():
+                continue
+            # Mark before launching so a slow summary is not started again on the next tick.
+            self._last_summary_date[user_id] = now.date()
+            asyncio.create_task(self._generate_for_user(user))
+
+    async def _generate_for_user(self, user: dict):
+        user_id = user["user_id"]
+        try:
+            gmail, calendar, refreshed = await asyncio.to_thread(_build_clients, user["google_token"])
+            if refreshed and refreshed != user["google_token"]:
+                user_model = await UserModel.create_instance(self.app.mongo_db)
+                await user_model.update_google_token(user["email"], refreshed)
+
+            service = DailySummaryService(
+                calendar_service=calendar,
+                gmail_service=gmail,
                 generation_client=getattr(self.app, "generation_client", None),
                 db_client=getattr(self.app, "mongo_db", None),
             )
-            summary = await summary_service.generate(project_id="default")
-            logger.info(f"Daily summary ready for notification: {summary['summary'][:120]}")
-            self._last_daily_summary_date = now.date()
-
-        gmail_service = getattr(self.app, "gmail_service", None)
-        if gmail_service and gmail_service.is_authenticated():
-            urgent_emails = await asyncio.to_thread(
-                gmail_service.search_emails,
-                query="is:unread newer_than:1d",
-                max_results=5
-            )
-            for email in urgent_emails:
-                priority = detect_priority(f"{email.get('subject', '')} {email.get('snippet', '')}")
-                if priority in ("critical", "high"):
-                    logger.info(f"Urgent email alert: {email.get('subject', 'No Subject')} [{priority}]")
+            summary = await service.generate(project_id="default", user_id=user_id)
+            await publish(user_id, summary["summary"])
+            logger.info(f"Daily summary delivered for user {user_id}")
+        except Exception as exc:
+            # Allow a retry on the next tick.
+            self._last_summary_date.pop(user_id, None)
+            logger.error(f"Error generating daily summary for user {user_id}: {exc}", exc_info=True)

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -25,13 +26,14 @@ class DailySummaryService:
         events = []
         if self.calendar_service and self.calendar_service.is_authenticated():
             try:
-                raw = self.calendar_service.service.events().list(
+                request = self.calendar_service.service.events().list(
                     calendarId="primary",
                     timeMin=today_start.isoformat() + "Z",
                     timeMax=today_end.isoformat() + "Z",
                     singleEvents=True,
                     orderBy="startTime",
-                ).execute()
+                )
+                raw = await asyncio.to_thread(request.execute)
                 for event in raw.get("items", []):
                     start = event.get("start", {})
                     events.append(
@@ -48,7 +50,7 @@ class DailySummaryService:
         emails = []
         if self.gmail_service and self.gmail_service.is_authenticated():
             try:
-                emails = self.gmail_service.search_emails(query="is:unread", max_results=5)
+                emails = await asyncio.to_thread(self.gmail_service.search_emails, query="is:unread", max_results=5)
             except Exception as exc:
                 logger.error(f"Error fetching Gmail for summary: {exc}")
 
@@ -141,7 +143,8 @@ Draft a concise morning briefing."""
         summary = ""
         if self.generation_client:
             try:
-                response = self.generation_client.generate_text(
+                response = await asyncio.to_thread(
+                    self.generation_client.generate_text,
                     prompt=prompt,
                     chat_history=list(chat_history or []),
                     max_output_tokens=600,

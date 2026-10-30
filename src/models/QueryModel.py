@@ -50,9 +50,9 @@ class QueryModel(BaseDataModel):
             {"$set": update_data}
         )
 
-    async def get_recent_queries(self, project_id: str, limit: int = 10):
+    async def get_recent_queries(self, project_id: str, user_id: str, limit: int = 10):
         cursor = self.collection.find(
-            {"project_id": project_id}
+            {"project_id": project_id, "user_id": user_id}
         ).sort("created_at", -1).limit(limit)
 
         queries = []

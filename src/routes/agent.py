@@ -11,10 +11,12 @@ from models.enums.ResponseEnums import ResponseSignal
 from fastapi.responses import StreamingResponse
 import io
 import asyncio
+import hmac
 from stores.llm.providers.OpenAIProvider import OpenAIProvider
 from helpers.config import get_settings
-from helpers.event_bus import proactive_messages_queue
+from helpers.event_bus import get_user_queue, issue_ticket, redeem_ticket
 from helpers.auth_utils import get_current_user
+from models.UserModel import UserModel
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -28,7 +30,6 @@ class ThreadStateLoadError(RuntimeError):
 
 
 _resume_locks: dict[str, asyncio.Lock] = {}
-_pending_resume_tokens: dict[str, str] = {}
 
 
 def _get_resume_lock(thread_id: str) -> asyncio.Lock:
@@ -225,11 +226,62 @@ def _validate_resume_state(state_snapshot, thread_id: str, resume_token: str | N
         raise ThreadStateLoadError("Approval is stale or not interruptible", code="stale_approval")
 
     metadata = values.get("metadata", {}) or {}
-    expected_token = metadata.get("resume_token") or _pending_resume_tokens.get(thread_id)
-    if resume_token is not None and expected_token and resume_token != expected_token:
-        raise ThreadStateLoadError("Approval token is stale", code="stale_approval")
+    expected_token = metadata.get("resume_token")
+    if not expected_token or not resume_token or not hmac.compare_digest(str(resume_token), str(expected_token)):
+        raise ThreadStateLoadError("Approval token is missing or stale", code="stale_approval")
 
     return state_snapshot
+
+
+async def _build_initial_state(request: Request, chat_request: ChatRequest, current_user: dict, state_snapshot):
+    """Initial graph state for a chat turn: carried-over history plus this user's Google token."""
+    existing_history = state_snapshot.values.get("chat_history", []) if state_snapshot and state_snapshot.values else []
+    if len(existing_history) > 10:
+        existing_history = existing_history[-10:]
+
+    initial_state = create_initial_state(
+        query=chat_request.query,
+        project_id=chat_request.project_id,
+        file_path=chat_request.file_path,
+        user_id=str(current_user["_id"]),
+    )
+    initial_state["chat_history"] = existing_history
+    if existing_history and state_snapshot and state_snapshot.values:
+        metadata = dict(state_snapshot.values.get("metadata", {}) or {})
+        # An approval token only ever belongs to the interrupt that created it.
+        metadata.pop("resume_token", None)
+        initial_state["metadata"] = metadata
+
+    user_email = current_user.get("email")
+    if user_email:
+        try:
+            user_model = await UserModel.create_instance(request.app.mongo_db)
+            google_token = await user_model.get_google_token(user_email)
+            if google_token:
+                initial_state["google_token"] = google_token
+                initial_state["user_email"] = user_email
+        except Exception as exc:
+            logger.warning(f"Could not load per-user Google token: {exc}")
+    return initial_state
+
+
+async def _persist_refreshed_token(request: Request, current_user: dict, original_token, new_token):
+    """Save a Google token the graph refreshed, so the next request does not refresh again."""
+    if not new_token or new_token == original_token or not current_user.get("email"):
+        return
+    try:
+        user_model = await UserModel.create_instance(request.app.mongo_db)
+        await user_model.update_google_token(current_user["email"], new_token)
+    except Exception as exc:
+        logger.warning(f"Could not persist refreshed Google token: {exc}")
+
+
+def _new_resume_token(agent_graph, config: dict, values: dict) -> dict:
+    """Attach a fresh single-use approval token to the paused thread; returns the new metadata."""
+    metadata = dict(values.get("metadata", {}) or {})
+    metadata["resume_token"] = uuid.uuid4().hex
+    agent_graph.update_state(config, {"metadata": metadata})
+    return metadata
 
 
 agent_router = APIRouter(
@@ -271,47 +323,16 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
                 thread_id=chat_request.thread_id
             )
 
-        existing_history = state_snapshot.values.get("chat_history", []) if state_snapshot and state_snapshot.values else []
-        if len(existing_history) > 10:
-            existing_history = existing_history[-10:]
+        initial_state = await _build_initial_state(request, chat_request, current_user, state_snapshot)
+        original_token = initial_state.get("google_token")
 
-        initial_state = create_initial_state(
-            query=chat_request.query,
-            project_id=chat_request.project_id,
-            file_path=chat_request.file_path,
-            user_id=str(current_user["_id"])
-        )
-        initial_state["chat_history"] = existing_history
-        if existing_history and state_snapshot and state_snapshot.values:
-            metadata = dict(state_snapshot.values.get("metadata", {}) or {})
-            initial_state["metadata"] = metadata
-
-        # ── Inject per-user Google token ────────────────────────────────────
-        user_email = current_user.get("email")
-        if user_email and hasattr(request.app, "mongo_db"):
-            try:
-                from models.UserModel import UserModel
-                _user_model = await UserModel.create_instance(request.app.mongo_db)
-                google_token = await _user_model.get_google_token(user_email)
-                if google_token:
-                    initial_state["google_token"] = google_token
-                    initial_state["user_email"] = user_email
-            except Exception as _e:
-                logger.warning(f"Could not load per-user Google token: {_e}")
-
-        logger.info(f"Starting agent workflow for query: {chat_request.query} [Thread: {namespaced_thread}]")
+        logger.info(f"Starting agent workflow [Thread: {namespaced_thread}]")
 
         final_state = await _invoke_agent_graph(agent_graph, initial_state, config, namespaced_thread)
 
-        # ── Persist refreshed Google token back to DB ───────────────────────
-        refreshed_token = final_state.get("google_token") if final_state else None
-        if refreshed_token and user_email and hasattr(request.app, "mongo_db"):
-            try:
-                from models.UserModel import UserModel
-                _um = await UserModel.create_instance(request.app.mongo_db)
-                await _um.update_google_token(user_email, refreshed_token)
-            except Exception as _e:
-                logger.warning(f"Could not persist refreshed Google token: {_e}")
+        await _persist_refreshed_token(
+            request, current_user, original_token, final_state.get("google_token") if final_state else None
+        )
 
         # Check if the graph is paused for human-in-the-loop approval
         try:
@@ -330,15 +351,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
         if state_snapshot.next:
             action_type = final_state.get("action_type", "")
             action_details = final_state.get("action_details", {})
-            metadata = dict(final_state.get("metadata", {}) or {})
-            if not metadata.get("resume_token"):
-                token = uuid.uuid4().hex
-                metadata["resume_token"] = token
-                _pending_resume_tokens[chat_request.thread_id] = token
-                try:
-                    agent_graph.update_state(config, {"metadata": metadata})
-                except Exception as update_exc:
-                    logger.warning(f"Could not persist resume token for thread {chat_request.thread_id}: {update_exc}")
+            metadata = _new_resume_token(agent_graph, config, final_state)
             return ChatResponse(
                 response=f"Pending approval to execute action: {action_type}",
                 type=f"action:{action_type}",
@@ -444,7 +457,7 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
                 paused_node = state_snapshot.next[0]
 
                 # Manually append the rejection to chat history so the LLM knows it was cancelled
-                existing_history = state_snapshot.values.get("chat_history", [])
+                existing_history = list(state_snapshot.values.get("chat_history", []))
                 existing_history.append({"role": "assistant", "content": "Action rejected by user."})
 
                 try:
@@ -480,7 +493,9 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
 
             # User approved, resume graph execution
             logger.info(f"Resuming graph for thread {namespaced_thread} with approval: {resume_request.approve}")
+            original_token = state_snapshot.values.get("google_token")
             final_state = await _invoke_agent_graph(agent_graph, None, config, namespaced_thread)
+            await _persist_refreshed_token(request, current_user, original_token, final_state.get("google_token"))
 
         response_type = final_state.get("request_type", "")
         if final_state.get("action_type"):
@@ -529,6 +544,9 @@ except ImportError:
     pass
 
 
+MAX_STT_BYTES = 25 * 1024 * 1024
+MAX_TTS_CHARS = 5000
+
 whisper_model = None
 try:
     whisper_model = whisper.load_model("base")
@@ -536,7 +554,7 @@ except Exception as e:
     logger.error(f"Failed to load whisper model: {e}")
 
 @agent_router.post("/stt")
-async def stt_endpoint(request: Request, file: UploadFile = File(...)):
+async def stt_endpoint(request: Request, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     """
     Endpoint to convert speech to text using local Whisper.
     """
@@ -544,48 +562,71 @@ async def stt_endpoint(request: Request, file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": "Whisper model not loaded"})
     
     try:
+        audio = await file.read(MAX_STT_BYTES + 1)
+        if len(audio) > MAX_STT_BYTES:
+            return JSONResponse(status_code=413, content={"error": "Audio file too large"})
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(await file.read())
+            tmp.write(audio)
             tmp_path = tmp.name
-            
-        result = whisper_model.transcribe(tmp_path)
-        os.remove(tmp_path)
-        
+
+        try:
+            result = await asyncio.to_thread(whisper_model.transcribe, tmp_path)
+        finally:
+            os.remove(tmp_path)
+
         return {"text": result["text"]}
-    except Exception as e:
-        logger.error(f"Error in STT endpoint: {e}", exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    except Exception:
+        logger.error("Error in STT endpoint", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Speech transcription failed"})
 
 @agent_router.post("/tts")
-async def tts_endpoint(request: Request, tts_request: TTSRequest):
+async def tts_endpoint(request: Request, tts_request: TTSRequest, current_user: dict = Depends(get_current_user)):
     """
     Endpoint to convert text to speech using local gTTS.
     """
     try:
-        tts = gTTS(text=tts_request.text, lang='en')
+        tts = gTTS(text=tts_request.text[:MAX_TTS_CHARS], lang='en')
         fp = io.BytesIO()
-        tts.write_to_fp(fp)
+        await asyncio.to_thread(tts.write_to_fp, fp)
         fp.seek(0)
         return StreamingResponse(fp, media_type="audio/mpeg")
-    except Exception as e:
-        logger.error(f"Error in TTS endpoint: {e}", exc_info=True)
+    except Exception:
+        logger.error("Error in TTS endpoint", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"error": str(e)}
+            content={"error": "Text-to-speech failed"}
         )
 
+@agent_router.post("/notifications/ticket")
+async def notifications_ticket(current_user: dict = Depends(get_current_user)):
+    """Issue a short-lived one-time ticket for opening the notifications stream.
+
+    The browser's EventSource cannot send an Authorization header, so it passes this
+    ticket as a query parameter instead of the long-lived JWT.
+    """
+    return {"ticket": issue_ticket(str(current_user["_id"]))}
+
+
 @agent_router.get("/notifications")
-async def notifications_endpoint(request: Request):
+async def notifications_endpoint(request: Request, ticket: str):
     """
-    SSE endpoint for proactive agent notifications.
+    SSE endpoint for the caller's own proactive agent notifications.
     """
+    user_id = redeem_ticket(ticket)
+    if user_id is None:
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": "Invalid or expired ticket"})
+
+    queue = get_user_queue(user_id)
+
     async def event_generator():
         while True:
             if await request.is_disconnected():
                 break
             try:
-                message = await asyncio.wait_for(proactive_messages_queue.get(), timeout=2.0)
-                yield f"data: {message}\n\n"
+                message = await asyncio.wait_for(queue.get(), timeout=2.0)
+                # JSON-encode so newlines in the message cannot break SSE framing.
+                yield f"data: {json.dumps(message, ensure_ascii=False)}\n\n"
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
@@ -618,33 +659,8 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, curr
             yield "data: [DONE]\n\n"
         return StreamingResponse(error_stream(), media_type="text/event-stream")
 
-    existing_history = state_snapshot.values.get("chat_history", []) if state_snapshot and state_snapshot.values else []
-    if len(existing_history) > 10:
-        existing_history = existing_history[-10:]
-
-    initial_state = create_initial_state(
-        query=chat_request.query,
-        project_id=chat_request.project_id,
-        file_path=chat_request.file_path,
-        user_id=str(current_user["_id"])
-    )
-    initial_state["chat_history"] = existing_history
-    if existing_history and state_snapshot and state_snapshot.values:
-        metadata = dict(state_snapshot.values.get("metadata", {}) or {})
-        initial_state["metadata"] = metadata
-
-    # ── Inject per-user Google token ────────────────────────────────────────
-    stream_user_email = current_user.get("email")
-    if stream_user_email and hasattr(request.app, "mongo_db"):
-        try:
-            from models.UserModel import UserModel
-            _user_model_s = await UserModel.create_instance(request.app.mongo_db)
-            google_token_s = await _user_model_s.get_google_token(stream_user_email)
-            if google_token_s:
-                initial_state["google_token"] = google_token_s
-                initial_state["user_email"] = stream_user_email
-        except Exception as _e:
-            logger.warning(f"Stream: Could not load per-user Google token: {_e}")
+    initial_state = await _build_initial_state(request, chat_request, current_user, state_snapshot)
+    original_token = initial_state.get("google_token")
 
     async def stream_graph_execution():
         try:
@@ -658,18 +674,16 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, curr
 
             # Execution finished or interrupted
             state = agent_graph.get_state(config)
+            await _persist_refreshed_token(
+                request, current_user, original_token, state.values.get("google_token") if state else None
+            )
             
             if state and state.next:
                 # HITL interrupt
                 final_vals = state.values
                 action_type = final_vals.get("action_type", "")
                 action_details = final_vals.get("action_details", {})
-                metadata = dict(final_vals.get("metadata", {}) or {})
-                if not metadata.get("resume_token"):
-                    token = uuid.uuid4().hex
-                    metadata["resume_token"] = token
-                    _pending_resume_tokens[namespaced_thread] = token
-                    agent_graph.update_state(config, {"metadata": metadata})
+                metadata = _new_resume_token(agent_graph, config, final_vals)
 
                 yield f"data: {json.dumps({'type': 'pending_action', 'action_type': action_type, 'action_details': action_details, 'metadata': metadata})}\n\n"
             else:

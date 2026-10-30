@@ -60,7 +60,9 @@ class TaskModel(BaseDataModel):
                 {"score": {"$meta": "textScore"}},
             ).sort([("score", {"$meta": "textScore"}), ("created_at", -1)]).limit(limit)
             documents = await cursor.to_list(length=limit)
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger("uvicorn.error").error("Failed to create TTL index for TaskModel", exc_info=True)
             cursor = self.collection.find(
                 {
                     "project_id": project_id,

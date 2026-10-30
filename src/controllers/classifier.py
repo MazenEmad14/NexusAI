@@ -287,7 +287,7 @@ RESPOND WITH JSON ONLY! NO TEXT!"""
         from services.retrieval import detect_priority
         return detect_priority(text)
 
-    def extract_action_details(self, query: str, action_type: str, chat_history: list = None) -> dict:
+    def extract_action_details(self, query: str, action_type: str, chat_history: list = None, available_files: str = "") -> dict:
         """
         Extract structured details from the query based on the action type.
         """
@@ -298,6 +298,8 @@ RESPOND WITH JSON ONLY! NO TEXT!"""
             return self._extract_meeting_details(query, chat_history)
         elif action_type == "reminder":
             return self._extract_reminder_details(query, chat_history)
+        elif action_type == "data_analysis":
+            return self._extract_data_analysis_details(query, chat_history, available_files)
         return {}
 
     def _extract_email_details(self, query: str, chat_history: list = None) -> dict:
@@ -305,12 +307,12 @@ RESPOND WITH JSON ONLY! NO TEXT!"""
 Return ONLY a valid JSON object:
 {"recipient": "email or name", "subject": "subject line", "body": "email body content"}
 
-RULES FOR EMAIL BODY:
-1. Match the tone and length to what the user actually asked for. A quick casual note ("tell him I'll be late") should stay short and simple — a proper greeting and 1-2 direct sentences, no padding. A request for something formal, detailed, or business-facing should get a fully professional structure: greeting, clear body paragraphs, professional sign-off.
-2. When the user gives brief points for a substantial email (report, proposal, formal request), expand them into a complete, well-articulated message — but don't invent facts, numbers, or claims the user didn't provide.
-3. COVER LETTER MODE: If the user asks for a cover letter, write a professional, structured, persuasive letter tailored to the job/context given. Only reference skills, experience, or achievements the user actually mentioned or that appear in the conversation/uploaded resume — do NOT fabricate specific accomplishments, years of experience, or qualifications not provided. If key details are missing (target role, key strengths), use general professional phrasing rather than invented specifics.
-4. RECIPIENT RULE: The recipient MUST be a valid email address if one is provided in the prompt. Do NOT extract just the first name (e.g., if the user says "to mazen@example.com", the recipient MUST be "mazen@example.com", not "Mazen"). If only a name is given and no email is available, use the name.
-5. LANGUAGE: Write the email in the same language the user used to request it, unless they explicitly specify a different language for the email itself.
+RULES:
+1. MATCH TONE: Match the tone and length to what the user actually asked for.
+2. EXPAND BODY: When the user gives brief points, expand them into a complete message.
+3. COVER LETTER MODE: Write a professional letter if requested.
+4. CRITICAL RECIPIENT RULE: You MUST search the user's request for an email address (e.g., name@example.com). If you see an email address anywhere near the recipient's name, you MUST put the FULL EMAIL ADDRESS in the "recipient" field. Never just put the name if the email address is provided! If no email is provided, you may use the name.
+5. LANGUAGE: Write the email in the same language the user used to request it.
 
 If any field is unclear, use a reasonable default."""
 
@@ -378,6 +380,19 @@ Output: {{"task": "Submit the report", "date": "2026-07-09", "time": "09:00", "p
 
         return self._extract_with_llm(query, system_prompt, chat_history)
 
+    def _extract_data_analysis_details(self, query: str, chat_history: list = None, available_files: str = "") -> dict:
+        system_prompt = f"""You are a data analyst assistant. The user wants to analyze a file.
+Here are the files available in the user's project:
+{available_files if available_files else "No files available. The user must upload a file first."}
+
+Identify which file the user is referring to from the list above. If the user refers to "sales data", find the file name that matches "sales" and return its exact file path.
+Return ONLY a valid JSON object with this exact schema:
+{{
+  "file_path": "the absolute file path from the list above, or empty string if no matching file exists"
+}}
+"""
+        return self._extract_with_llm(query, system_prompt, chat_history)
+
     def _extract_with_llm(self, query: str, system_prompt: str, chat_history: list = None) -> dict:
         messages = [
             self.generation_client.construct_prompt(
@@ -424,7 +439,8 @@ Output: {{"task": "Submit the report", "date": "2026-07-09", "time": "09:00", "p
                         if isinstance(result, dict):
                             logger.info("[extract_with_llm] Recovered via ast.literal_eval fallback")
                             return result
-                    except Exception:
+                    except Exception as e:
+                        logger.error("Error parsing classifier JSON fallback", exc_info=True)
                         pass
                     logger.error(f"[extract_with_llm] JSON parse failed. json_str={repr(json_str[:200])}")
                     return {}
