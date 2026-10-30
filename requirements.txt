@@ -24,3 +24,4 @@ qdrant_client
 Requests
 SQLAlchemy
 cryptography>=42.0.0
+bcrypt>=4.0.0

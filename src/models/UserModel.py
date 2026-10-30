@@ -4,6 +4,10 @@ from typing import Optional, Dict, Any
 import logging
 from helpers.token_crypto import encrypt_token, decrypt_token
 
+
+def _normalize(email: str) -> str:
+    return (email or '').strip().lower()
+
 logger = logging.getLogger('uvicorn.error')
 
 class UserModel(BaseDataModel):
@@ -25,6 +29,7 @@ class UserModel(BaseDataModel):
     async def create_user(self, user: User) -> bool:
         try:
             user_dict = user.dict(by_alias=True, exclude={"user_id"}, exclude_none=True)
+            user_dict["email"] = _normalize(user_dict["email"])
             result = await self.collection.insert_one(user_dict)
             return result.acknowledged
         except Exception as e:
@@ -33,7 +38,7 @@ class UserModel(BaseDataModel):
 
     async def get_user_by_email(self, email: str) -> dict:
         try:
-            user = await self.collection.find_one({"email": email})
+            user = await self.collection.find_one({"email": _normalize(email)})
             return user
         except Exception as e:
             logger.error(f"Error fetching user by email: {e}")
@@ -90,3 +95,21 @@ class UserModel(BaseDataModel):
         except Exception as e:
             logger.error(f"Error listing Google-connected users: {e}")
             return []
+
+    async def normalize_existing_emails(self) -> int:
+        """Lower-case emails stored by older versions (which kept the case the user typed).
+
+        An address whose lower-cased form already belongs to another account is left alone and
+        reported, because merging two accounts is not something to do automatically.
+        """
+        changed = 0
+        async for doc in self.collection.find({"email": {"$regex": "[A-Z]"}}, {"email": 1}):
+            lowered = _normalize(doc["email"])
+            if await self.collection.find_one({"email": lowered}, {"_id": 1}):
+                logger.warning(f"Two accounts share the email {lowered} apart from letter case; left as is")
+                continue
+            await self.collection.update_one({"_id": doc["_id"]}, {"$set": {"email": lowered}})
+            changed += 1
+        if changed:
+            logger.info(f"Lower-cased {changed} stored user emails")
+        return changed

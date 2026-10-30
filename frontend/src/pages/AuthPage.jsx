@@ -106,7 +106,7 @@ export default function AuthPage() {
         navigate("/workspace");
       }
     } catch (err) {
-      setError(err?.response?.data?.detail || "Sign in failed");
+      setError(err?.message || "Sign in failed");
     } finally {
       setLoading(false);
     }
@@ -133,7 +133,7 @@ export default function AuthPage() {
         navigate("/workspace");
       }
     } catch (err) {
-      setError(err?.response?.data?.detail || "Sign up failed");
+      setError(err?.message || "Sign up failed");
     } finally {
       setLoading(false);
     }
