@@ -2,6 +2,7 @@ from fastapi import APIRouter, status, Request, File, UploadFile, Depends
 from fastapi.responses import JSONResponse
 import asyncio
 import logging
+import os
 import uuid
 import json
 
@@ -377,36 +378,48 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
         )
 
 import tempfile
-import os
+import threading
 from gtts import gTTS
-import whisper
-import os
 
-try:
-    import imageio_ffmpeg
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-    os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg_exe)
+try:  # speech-to-text is an optional extra (requirements-voice.txt): it pulls in PyTorch
+    import whisper
 except ImportError:
-    pass
+    whisper = None
 
 
 MAX_STT_BYTES = 25 * 1024 * 1024
 MAX_TTS_CHARS = 5000
 
-whisper_model = None
-try:
-    whisper_model = whisper.load_model("base")
-except Exception as e:
-    logger.error(f"Failed to load whisper model: {e}")
+_whisper_model = None
+_whisper_lock = threading.Lock()
+
+
+def _get_whisper_model():
+    """Load the Whisper model on first use, not at import time (it is slow and ~150 MB)."""
+    global _whisper_model
+    with _whisper_lock:
+        if _whisper_model is None:
+            try:  # the bundled ffmpeg lets Whisper decode audio without a system install
+                import imageio_ffmpeg
+                os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
+            except ImportError:
+                pass
+            _whisper_model = whisper.load_model("base")
+        return _whisper_model
+
+
+def _transcribe(path: str) -> str:
+    return _get_whisper_model().transcribe(path)["text"]
+
 
 @agent_router.post("/stt")
 async def stt_endpoint(request: Request, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     """
     Endpoint to convert speech to text using local Whisper.
     """
-    if whisper_model is None:
-        return JSONResponse(status_code=500, content={"error": "Whisper model not loaded"})
-    
+    if whisper is None:
+        return JSONResponse(status_code=503, content={"error": "Speech-to-text is not installed on this server"})
+
     try:
         audio = await file.read(MAX_STT_BYTES + 1)
         if len(audio) > MAX_STT_BYTES:
@@ -417,11 +430,11 @@ async def stt_endpoint(request: Request, file: UploadFile = File(...), current_u
             tmp_path = tmp.name
 
         try:
-            result = await asyncio.to_thread(whisper_model.transcribe, tmp_path)
+            text = await asyncio.to_thread(_transcribe, tmp_path)
         finally:
             os.remove(tmp_path)
 
-        return {"text": result["text"]}
+        return {"text": text}
     except Exception:
         logger.error("Error in STT endpoint", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "Speech transcription failed"})

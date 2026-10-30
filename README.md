@@ -28,7 +28,10 @@ mini-RAG-APP/ (NexusAI Workspace)
 |   |-- stores/             # Data access layers (LLMs, Vector DBs, Gmail, Calendar)
 |   |-- .env.example        # Environment variables example
 |   |-- main.py             # FastAPI entry point
-|   `-- requirements.txt
+|   |-- requirements.txt        (runtime dependencies)
+|   |-- requirements.lock       (every package pinned)
+|   |-- requirements-dev.txt    (adds the test tools)
+|   `-- requirements-voice.txt  (optional speech-to-text)
 |-- frontend/               # React (Vite) frontend application
 |-- docker/                 # Docker Compose configurations (e.g., MongoDB)
 |-- tests/                  # Pytest unit and E2E integration tests
@@ -69,11 +72,35 @@ mini-RAG-APP/ (NexusAI Workspace)
    source .venv/bin/activate
    ```
 
-   Install dependencies:
+   Install dependencies (Python 3.10):
 
    ```bash
-   pip install -r src/requirements.txt
+   pip install -r src/requirements.txt -c src/requirements.lock
    ```
+
+   `src/requirements.txt` lists what the backend uses; `src/requirements.lock` pins every package
+   those pull in, so everyone gets the same versions. Optional extras:
+
+   ```bash
+   pip install -r src/requirements-voice.txt -c src/requirements.lock   # speech-to-text (installs PyTorch, large)
+   pip install -r src/requirements-dev.txt -c src/requirements.lock     # tests
+   ```
+
+   Without the voice extra, `POST /api/v1/agent/stt` answers 503 and everything else works.
+
+   **Updating dependencies.** Edit the version in `src/requirements.txt`, then rebuild the lock in a
+   throw-away environment so it reflects a clean install:
+
+   ```bash
+   python -m venv /tmp/lockenv
+   /tmp/lockenv/bin/pip install -r src/requirements-dev.txt        # Windows: Scripts\pip
+   /tmp/lockenv/bin/pip check                                      # must report no conflicts
+   /tmp/lockenv/bin/python -m pytest src/tests                     # must pass
+   /tmp/lockenv/bin/pip freeze | sort -f > /tmp/freeze.txt         # then replace the lines under the header of src/requirements.lock
+   ```
+
+   Do not install into your global Python: it accumulates unrelated packages whose requirements
+   conflict with this project's.
 
 3. **Environment Setup:**
 

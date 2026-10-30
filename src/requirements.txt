@@ -1,31 +1,56 @@
-fastapi==0.110.2
-uvicorn[standard]==0.29.0
-python-multipart==0.0.9
-python-dotenv==1.0.1
+# Runtime dependencies of the NexusAI backend (what the code imports, plus the extras it needs
+# to run). Versions are the ones the test suite passes on; `requirements.lock` pins everything
+# those packages pull in. Optional features live in requirements-voice.txt; tests in
+# requirements-dev.txt.
+#
+#   Install:  pip install -r src/requirements.txt
+#   Exactly reproducible install:  pip install -r src/requirements.txt -c src/requirements.lock
+
+# ── web framework ────────────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.18          # file uploads (UploadFile) need it
+email-validator==2.2.0            # pydantic EmailStr (sign-up / sign-in)
+pydantic==2.10.3
 pydantic-settings==2.14.0
 aiofiles==23.2.1
-langchain==0.3.28
-langchain-community==0.3.31
-langchain-text-splitters==0.3.11
-PyMuPDF==1.27.2.3
-motor==3.7.1
-pydantic-mongo==2.3.0
-openai==1.35.13
-cohere==5.5.8
-qdrant-client==1.10.1
-groq==1.1.1
-SQLAlchemy==2.0.36
-asyncpg==0.30.0
-alembic==1.14.0
-# psycopg2-binary==2.9.10
-psycopg2==2.9.10
+httpx==0.28.1
 
-# ===== Secretary AI Agent =====
-langgraph>=0.2.0
-google-api-python-client>=2.130.0
-google-auth-httplib2>=0.2.0
-google-auth-oauthlib>=1.2.0
-pandas
-openpyxl
-langchain-experimental
-apscheduler
+# ── data stores ──────────────────────────────────────────────────────────────
+motor==3.7.1
+pymongo==4.11.3
+qdrant-client==1.10.1
+SQLAlchemy==2.0.36                # engine created at startup (see REFACTOR_PLAN.md 3.5)
+asyncpg==0.30.0
+
+# ── LLM providers and agent ──────────────────────────────────────────────────
+openai==1.57.4
+cohere==5.5.8
+groq==0.37.1
+langchain-google-genai==2.0.11    # imported by the Gemini provider
+langchain-core==0.3.83
+langchain-community==0.3.31       # document loaders
+langchain-text-splitters==0.3.11
+langgraph==0.2.76
+PyMuPDF==1.27.2.3                 # PDF loader
+ddgs==9.14.4                      # web search fallback
+
+# ── data analysis ────────────────────────────────────────────────────────────
+pandas==2.3.3
+openpyxl==3.1.5                   # .xlsx
+xlrd==2.0.2                       # .xls
+
+# ── Google integration ───────────────────────────────────────────────────────
+google-api-python-client==2.189.0
+google-auth==2.55.0
+google-auth-oauthlib==1.4.0
+google-auth-httplib2==0.3.0
+httplib2==0.31.2
+
+# ── security, scheduling, misc ───────────────────────────────────────────────
+bcrypt==4.2.1
+PyJWT==2.13.0
+cryptography==46.0.4
+APScheduler==3.11.3
+gTTS==2.5.4                       # text-to-speech
+tzdata==2026.1                    # time zone database (Windows has none of its own)

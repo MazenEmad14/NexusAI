@@ -1,0 +1,134 @@
+"""The dependency files must describe what the code really imports (plan 2.20)."""
+import ast
+import re
+import sys
+from pathlib import Path
+
+SRC = Path(__file__).resolve().parents[1]
+ROOT = SRC.parent
+
+# Top-level import name -> the distribution that provides it.
+IMPORT_TO_DIST = {
+    "aiofiles": "aiofiles", "apscheduler": "apscheduler", "bcrypt": "bcrypt", "bson": "pymongo",
+    "cohere": "cohere", "cryptography": "cryptography", "ddgs": "ddgs", "fastapi": "fastapi",
+    "google": "google-auth", "google_auth_httplib2": "google-auth-httplib2",
+    "google_auth_oauthlib": "google-auth-oauthlib", "googleapiclient": "google-api-python-client",
+    "groq": "groq", "gtts": "gtts", "httplib2": "httplib2", "httpx": "httpx", "jwt": "pyjwt",
+    "langchain_community": "langchain-community", "langchain_core": "langchain-core",
+    "langchain_google_genai": "langchain-google-genai", "langchain_text_splitters": "langchain-text-splitters",
+    "langgraph": "langgraph", "motor": "motor", "openai": "openai", "pandas": "pandas",
+    "pydantic": "pydantic", "pydantic_settings": "pydantic-settings", "pymongo": "pymongo",
+    "qdrant_client": "qdrant-client", "sqlalchemy": "sqlalchemy",
+    # optional extras (requirements-voice.txt)
+    "whisper": "openai-whisper", "imageio_ffmpeg": "imageio-ffmpeg",
+}
+
+# Needed at runtime although nothing imports them by name.
+RUNTIME_EXTRAS = {
+    "uvicorn", "python-multipart", "email-validator", "asyncpg", "openpyxl", "xlrd", "tzdata",
+    "pymupdf",  # loaded lazily by langchain's PyMuPDFLoader
+}
+
+
+def _names(requirements_file: Path) -> dict:
+    """{normalised name: line} for the packages a requirements file declares itself."""
+    found = {}
+    for raw in requirements_file.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#")[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        match = re.match(r"^([A-Za-z0-9_.\-]+)(\[[^\]]*\])?", line)
+        found[re.sub(r"[-_.]+", "-", match.group(1)).lower()] = line
+    return found
+
+
+def _third_party_imports() -> set:
+    local = {p.name for p in SRC.iterdir() if p.is_dir()} | {p.stem for p in SRC.glob("*.py")}
+    imports = set()
+    for path in SRC.rglob("*.py"):
+        parts = set(path.relative_to(SRC).parts)
+        if parts & {"tests", "__pycache__", "alembic", "assets"} or path.name.startswith("test_"):
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imports |= {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imports.add(node.module.split(".")[0])
+    return {name for name in imports if name not in local and name not in sys.stdlib_module_names}
+
+
+def test_every_third_party_import_is_declared():
+    core, voice = _names(SRC / "requirements.txt"), _names(SRC / "requirements-voice.txt")
+    unknown = sorted(name for name in _third_party_imports() if name not in IMPORT_TO_DIST)
+    assert not unknown, f"Add these imports to IMPORT_TO_DIST and to a requirements file: {unknown}"
+
+    for module in _third_party_imports():
+        dist = IMPORT_TO_DIST[module]
+        optional = dist in ("openai-whisper", "imageio-ffmpeg")
+        declared = voice if optional else core
+        assert dist in declared, f"{module} is imported but {dist} is not in {'requirements-voice' if optional else 'requirements'}.txt"
+
+
+def test_nothing_unused_is_declared():
+    needed = {IMPORT_TO_DIST[m] for m in _third_party_imports()} | RUNTIME_EXTRAS
+    unused = sorted(set(_names(SRC / "requirements.txt")) - needed)
+    assert not unused, f"Declared but never imported (remove or add to RUNTIME_EXTRAS): {unused}"
+
+
+def test_optional_heavy_packages_stay_out_of_the_default_install():
+    core = _names(SRC / "requirements.txt")
+    assert "openai-whisper" not in core and "torch" not in core and "imageio-ffmpeg" not in core
+    assert "openai-whisper" in _names(SRC / "requirements-voice.txt")
+
+
+def test_core_requirements_are_exactly_pinned():
+    for name, line in _names(SRC / "requirements.txt").items():
+        assert "==" in line, f"{name} is not pinned with == ({line})"
+
+
+def test_the_root_file_only_forwards_to_src():
+    lines = [l.strip() for l in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
+    assert lines == ["-r src/requirements.txt"]  # one list, so the two files can never drift apart again
+
+
+def test_dev_requirements_build_on_the_runtime_ones_and_add_pytest():
+    text = (SRC / "requirements-dev.txt").read_text(encoding="utf-8")
+    assert "-r requirements.txt" in text and "pytest" in _names(SRC / "requirements-dev.txt")
+
+
+def test_the_lock_file_pins_every_direct_requirement_to_the_same_version():
+    lock = SRC / "requirements.lock"
+    if not lock.exists():
+        return  # generated by tools/ (see README); skipped until it exists
+    locked = {}
+    for raw in lock.read_text(encoding="utf-8").splitlines():
+        if "==" in raw and not raw.startswith("#"):
+            name, version = raw.strip().split("==", 1)
+            locked[re.sub(r"[-_.]+", "-", name).lower()] = version
+    for name, line in _names(SRC / "requirements.txt").items():
+        version = line.split("==", 1)[1].split()[0]
+        assert locked.get(name) == version, f"{name}: requirements.txt says {version}, lock says {locked.get(name)}"
+
+
+def test_the_example_settings_file_lists_every_required_setting(monkeypatch):
+    """A new developer copies .env.example, so it must contain everything the app refuses to start without."""
+    monkeypatch.setenv("JWT_SECRET_KEY", "x" * 40)  # intentionally blank in the example
+    sys.path.insert(0, str(SRC))
+    from helpers.config import Settings
+
+    settings = Settings(_env_file=SRC / ".env.example")
+    assert settings.FILE_MAX_SIZE > 0 and settings.GENERATION_BACKEND and settings.VECTOR_DB_BACKEND
+
+
+def test_the_example_settings_file_contains_no_real_secrets():
+    secret_names = ("API_KEY", "PASSWORD", "JWT_SECRET_KEY", "TOKEN_ENCRYPTION_KEY")
+    for raw in (SRC / ".env.example").read_text(encoding="utf-8").splitlines():
+        line = raw.split("#")[0].strip()
+        name, _, value = line.partition("=")
+        if any(part in name for part in secret_names):
+            assert value.strip() in ("", "CHANGE_ME"), f"{name} must be blank or CHANGE_ME in the example file"
+
+
+def test_the_ci_workflow_installs_from_the_pinned_files():
+    workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    assert "src/requirements-dev.txt" in workflow and "src/requirements.lock" in workflow and "pip check" in workflow

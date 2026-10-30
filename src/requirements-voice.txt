@@ -1,0 +1,5 @@
+# Optional: speech-to-text (POST /api/v1/agent/stt). Pulls in PyTorch, which is large, so it is
+# not part of the default install; without it the endpoint answers 503.
+-r requirements.txt
+openai-whisper==20250625
+imageio-ffmpeg>=0.5.1             # bundled ffmpeg so Whisper can decode audio
