@@ -143,9 +143,7 @@ Draft a concise morning briefing."""
         summary = ""
         if self.generation_client:
             try:
-                response = await asyncio.to_thread(
-                    self.generation_client.generate_text,
-                    prompt=prompt,
+                response = await self.generation_client.agenerate_text(prompt=prompt,
                     chat_history=list(chat_history or []),
                     max_output_tokens=600,
                     temperature=0.3,

@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     INPUT_DAFAULT_MAX_CHARACTERS: int = None
     GENERATION_DAFAULT_MAX_TOKENS: int = None
     GENERATION_DAFAULT_TEMPERATURE: float = None
+    # Max size of a generation prompt (instructions + data). The INPUT_* limit above only clips embedded text.
+    GENERATION_MAX_INPUT_CHARACTERS: int = 24000
 
     VECTOR_DB_BACKEND : str
     VECTOR_DB_PATH : str

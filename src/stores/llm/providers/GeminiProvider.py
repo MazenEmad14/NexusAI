@@ -29,29 +29,38 @@ class GeminiProvider(LLMInterface):
         self.embedding_model_id = model_id
         self.embedding_size = embedding_size
 
-    def process_text(self, text: str) -> str:
-        return text[:self.default_input_max_characters].strip()
+    def _llm(self, max_output_tokens, temperature):
+        max_output_tokens, temperature = self._generation_params(max_output_tokens, temperature)
+        return ChatGoogleGenerativeAI(
+            model=self.generation_model_id,
+            google_api_key=self.api_key,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
 
-    def generate_text(self, prompt: str, chat_history: list = [], max_output_tokens: int = None,
+    def _messages(self, prompt, chat_history):
+        messages = list(chat_history) if chat_history else []
+        messages.append({"role": "user", "content": self.process_prompt(prompt)})
+        return messages
+
+    def generate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
                       temperature: float = None) -> str:
         if not self.api_key:
             self.logger.error("Gemini API key is not set")
             return None
-
         try:
-            llm = ChatGoogleGenerativeAI(
-                model=self.generation_model_id,
-                google_api_key=self.api_key,
-                temperature=temperature if temperature is not None else self.default_generation_temperature,
-                max_output_tokens=max_output_tokens if max_output_tokens is not None else self.default_generation_max_output_tokens
-            )
-            
-            messages = []
-            if chat_history:
-                messages.extend(chat_history)
-            messages.append({"role": "user", "content": self.process_text(prompt)})
-            
-            response = llm.invoke(messages)
+            return self._llm(max_output_tokens, temperature).invoke(self._messages(prompt, chat_history)).content
+        except Exception as e:
+            self.logger.error(f"Error generating text with Gemini: {e}")
+            return None
+
+    async def agenerate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
+                             temperature: float = None) -> str:
+        if not self.api_key:
+            self.logger.error("Gemini API key is not set")
+            return None
+        try:
+            response = await self._llm(max_output_tokens, temperature).ainvoke(self._messages(prompt, chat_history))
             return response.content
         except Exception as e:
             self.logger.error(f"Error generating text with Gemini: {e}")
@@ -97,7 +106,7 @@ class GeminiProvider(LLMInterface):
     def construct_prompt(self, prompt: str, role: str):
         return {
             "role": role,
-            "content": self.process_text(prompt)
+            "content": self.process_prompt(prompt)
         }
 
     def generate_audio_from_text(self, text: str) -> bytes:

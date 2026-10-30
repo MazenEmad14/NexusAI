@@ -69,9 +69,7 @@ Search Snippets:
 User Query: {query}"""
         
         try:
-            answer = await asyncio.to_thread(
-                generation_client.generate_text,
-                prompt=prompt,
+            answer = await generation_client.agenerate_text(prompt=prompt,
                 chat_history=state.get("chat_history", []),
                 max_output_tokens=300,
                 temperature=0.1

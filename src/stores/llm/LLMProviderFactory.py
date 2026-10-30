@@ -6,6 +6,12 @@ class LLMProviderFactory:
         self.config = config
 
     def create(self, provider: str):
+        client = self._build(provider)
+        if client is not None:
+            client.max_prompt_characters = self.config.GENERATION_MAX_INPUT_CHARACTERS
+        return client
+
+    def _build(self, provider: str):
         if provider == LLMEnums.OPENAI.value:
             return OpenAIProvider(
                 api_key = self.config.OPENAI_API_KEY,

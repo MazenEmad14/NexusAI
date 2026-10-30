@@ -106,6 +106,11 @@ async def shutdown_db_client():
         app.scheduler.shutdown()
     if hasattr(app, "notification_engine"):
         await app.notification_engine.stop()
+    for client in (app.generation_client, app.embedding_client):
+        try:
+            await client.aclose()
+        except Exception:
+            logger.warning("Failed to close an LLM client", exc_info=True)
     app.mongo_conn.close()
     await app.db_engine.dispose()
     app.vectordb_client.disconnect()

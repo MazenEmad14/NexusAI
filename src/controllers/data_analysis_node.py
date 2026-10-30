@@ -195,8 +195,7 @@ async def data_analysis_node(state: AgentState, **kwargs) -> AgentState:
         query=query,
     )
     try:
-        plan_text = await asyncio.to_thread(
-            generation_client.generate_text,
+        plan_text = await generation_client.agenerate_text(
             prompt=plan_prompt, chat_history=[], max_output_tokens=300, temperature=0.0,
         )
         plan = _parse_plan(plan_text)
@@ -215,8 +214,7 @@ async def data_analysis_node(state: AgentState, **kwargs) -> AgentState:
 
     summary = ""
     try:
-        summary = await asyncio.to_thread(
-            generation_client.generate_text,
+        summary = await generation_client.agenerate_text(
             prompt=SUMMARY_PROMPT.format(query=query, result=result_text),
             chat_history=[], max_output_tokens=300, temperature=0.2,
         )
