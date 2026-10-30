@@ -83,9 +83,7 @@ async def _evaluate_user(app, user: dict):
         sender = email.get("sender") or email.get("from", "Unknown")
         emails_text += f"Email {i+1}:\nSubject: {email.get('subject', '')}\nSnippet: {email.get('snippet', '')}\nFrom: {sender}\n\n"
 
-    content = await asyncio.to_thread(
-        generation_client.generate_text,
-        prompt=PROMPT_TEMPLATE.format(emails_text=emails_text),
+    content = await generation_client.agenerate_text(prompt=PROMPT_TEMPLATE.format(emails_text=emails_text),
         chat_history=[],
         max_output_tokens=500,
         temperature=0.1,

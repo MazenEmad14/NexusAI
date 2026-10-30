@@ -131,9 +131,7 @@ async def conversational_node(state: AgentState, **kwargs) -> AgentState:
                 llm_history.append(generation_client.construct_prompt(prompt=turn["content"], role=role))
 
         try:
-            answer = await asyncio.to_thread(
-                generation_client.generate_text,
-                prompt=user_prompt,
+            answer = await generation_client.agenerate_text(prompt=user_prompt,
                 chat_history=llm_history,
                 max_output_tokens=150,
                 temperature=0.7,
