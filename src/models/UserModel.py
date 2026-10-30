@@ -12,15 +12,15 @@ class UserModel(BaseDataModel):
         super().__init__(db_client=db_client)
         self.collection = self.db_client.users
 
+    COLLECTION_NAME = "users"
+
+    @classmethod
+    def index_specs(cls):
+        return [{"key": [("email", 1)], "name": "email_1", "unique": True}]
+
     @classmethod
     async def create_instance(cls, db_client):
-        instance = cls(db_client)
-        await instance.init_collection()
-        return instance
-
-    async def init_collection(self):
-        # Create unique index on email
-        await self.collection.create_index([("email", 1)], unique=True)
+        return cls(db_client)
 
     async def create_user(self, user: User) -> bool:
         try:
@@ -45,7 +45,7 @@ class UserModel(BaseDataModel):
                 {"email": email},
                 {"$set": {"is_google_connected": status}}
             )
-            return result.modified_count > 0
+            return result.matched_count > 0  # a no-op update (value unchanged) is still a success
         except Exception as e:
             logger.error(f"Error updating Google Auth status: {e}")
             return False

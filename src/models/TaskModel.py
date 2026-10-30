@@ -1,8 +1,14 @@
+import re
+
+from pymongo.errors import OperationFailure
+
 from models.BaseDataModel import BaseDataModel
 from models.db_schemes.task import Task
 import logging
 
 logger = logging.getLogger('uvicorn.error')
+
+_INDEX_NOT_FOUND = 27  # MongoDB error code for a $text query without a text index
 
 class TaskModel(BaseDataModel):
     
@@ -11,20 +17,31 @@ class TaskModel(BaseDataModel):
         self.collection = self.db_client.tasks
         self.scans = self.db_client.task_email_scans  # emails already mined for tasks
 
+    COLLECTION_NAME = "tasks"
+
+    @classmethod
+    def index_specs(cls):
+        return [
+            {"key": [("user_id", 1), ("project_id", 1), ("status", 1)]},
+            {"key": [("user_id", 1), ("project_id", 1), ("description_key", 1)]},
+            {"key": [("deadline", 1)]},
+            # Powers search_tasks. Only one text index is allowed per collection.
+            {"key": [("description", "text")], "name": "task_description_text"},
+        ]
+
+    @classmethod
+    async def ensure_indexes(cls, db_client) -> None:
+        await super().ensure_indexes(db_client)
+        try:
+            await db_client.task_email_scans.create_index(
+                [("user_id", 1), ("message_id", 1)], unique=True
+            )
+        except Exception:
+            logger.error("Could not create index on task_email_scans", exc_info=True)
+
     @classmethod
     async def create_instance(cls, db_client):
-        instance = cls(db_client)
-        await instance.init_collection()
-        return instance
-
-    async def init_collection(self):
-        # Create indexes
-        await self.collection.create_index([("project_id", 1)])
-        await self.collection.create_index([("status", 1)])
-        await self.collection.create_index([("priority", 1)])
-        await self.collection.create_index([("deadline", 1)])
-        await self.collection.create_index([("user_id", 1), ("project_id", 1), ("description_key", 1)])
-        await self.scans.create_index([("user_id", 1), ("message_id", 1)], unique=True)
+        return cls(db_client)
 
     async def create_task(self, task: Task) -> bool:
         try:
@@ -87,26 +104,25 @@ class TaskModel(BaseDataModel):
             return []
 
     async def search_tasks(self, project_id: str, user_id: str, text: str, limit: int = 10) -> list[Task]:
+        """Pending tasks of this user matching the text, best matches first."""
+        base = {"project_id": project_id, "user_id": user_id, "status": "pending"}
         try:
             cursor = self.collection.find(
-                {
-                    "project_id": project_id,
-                    "user_id": user_id,
-                    "status": "pending",
-                    "$text": {"$search": text},
-                },
+                {**base, "$text": {"$search": text}},
                 {"score": {"$meta": "textScore"}},
             ).sort([("score", {"$meta": "textScore"}), ("created_at", -1)]).limit(limit)
             documents = await cursor.to_list(length=limit)
-        except Exception as e:
-            import logging
-            logging.getLogger("uvicorn.error").error("Failed to create TTL index for TaskModel", exc_info=True)
+        except OperationFailure as exc:
+            if exc.code != _INDEX_NOT_FOUND:
+                raise
+            # The text index does not exist yet (it is created at startup). Match on the
+            # individual words instead, escaped so user input can never act as a regex.
+            logger.warning("Task text index missing; falling back to keyword matching")
+            words = [w for w in re.findall(r"\w+", (text or "").lower()) if len(w) > 2][:5]
+            if not words:
+                return []
             cursor = self.collection.find(
-                {
-                    "project_id": project_id,
-                    "status": "pending",
-                    "description": {"$regex": text, "$options": "i"},
-                }
+                {**base, "$or": [{"description": {"$regex": re.escape(w), "$options": "i"}} for w in words]}
             ).sort("created_at", -1).limit(limit)
             documents = await cursor.to_list(length=limit)
 

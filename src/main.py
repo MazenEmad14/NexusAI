@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 from controllers.agent_graph import build_agent_graph
+from models.indexes import ensure_all_indexes
 from stores.checkpoint.MongoCheckpointer import MongoCheckpointer
 from services.notification_engine import NotificationEngine
 from controllers.proactive_agent import evaluate_inbox_and_notify
@@ -49,6 +50,7 @@ async def startup_db_client():
     mongodb_url = getattr(settings, "MONGODB_URL", "mongodb://localhost:27017/")
     app.mongo_conn = AsyncIOMotorClient(mongodb_url)
     app.mongo_db = app.mongo_conn["depi"]
+    await ensure_all_indexes(app.mongo_db)
 
     # 2. PostgreSQL Connection (for existing RAG data if needed)
     postgres_conn = f"postgresql+asyncpg://{settings.POSTGRES_USERNAME}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_MAIN_DATABASE}"
