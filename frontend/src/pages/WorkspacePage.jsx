@@ -539,18 +539,27 @@ export default function WorkspacePage() {
         setUploadedFilePath(result.file_path);
       }
 
-      // Auto-process the uploaded file
-      try {
-        await processFiles(PROJECT_ID, { fileId: result.file_id });
-      } catch {
-        // Processing might fail if vectorDB not connected
-      }
+      // Only text and PDF files go into the knowledge base; spreadsheets are used for data analysis.
+      const indexable = result.indexable !== false;
+      let indexed = false;
 
-      // Auto-push to vector DB
-      try {
-        await pushIndex(PROJECT_ID);
-      } catch {
-        // Indexing might fail
+      if (indexable) {
+        // Auto-process the uploaded file
+        try {
+          const processed = await processFiles(PROJECT_ID, { fileId: result.file_id });
+          indexed = (processed?.processed_files ?? 0) > 0;
+        } catch {
+          // Processing might fail if vectorDB not connected
+        }
+
+        // Auto-push to vector DB
+        if (indexed) {
+          try {
+            await pushIndex(PROJECT_ID);
+          } catch {
+            indexed = false; // Indexing might fail
+          }
+        }
       }
 
       // Notify in chat
@@ -559,11 +568,15 @@ export default function WorkspacePage() {
         {
           id: Date.now(),
           role: 'assistant',
-          content: `📄 **File uploaded successfully:** \`${file.name}\`\n\nThe document has been added to your knowledge base and is now searchable.`,
+          content: indexed
+            ? `📄 **File uploaded successfully:** \`${file.name}\`\n\nThe document has been added to your knowledge base and is now searchable.`
+            : indexable
+              ? `📄 **File uploaded:** \`${file.name}\`\n\nIt could not be added to the knowledge base (no readable text was found, or indexing is unavailable).`
+              : `📊 **File uploaded:** \`${file.name}\`\n\nThis is a data file, so ask me to analyse it (for example "plot sales by region") instead of searching it.`,
           agents: [{ label: '📄 RAG Agent', color: 'bg-orange-500/20 text-orange-300 border-orange-500/30' }],
         },
       ]);
-      showSuccess(`"${file.name}" uploaded and indexed`);
+      showSuccess(indexed ? `"${file.name}" uploaded and indexed` : `"${file.name}" uploaded`);
     } catch (err) {
       setMessages(prev => [
         ...prev,

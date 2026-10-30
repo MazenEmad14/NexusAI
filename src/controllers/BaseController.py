@@ -1,6 +1,6 @@
 from helpers.config import get_settings, Settings
 import os
-import random
+import secrets
 import string
 
 class BaseController:
@@ -21,7 +21,8 @@ class BaseController:
         )
         
     def generate_random_string(self, length: int=12):
-        return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
+        alphabet = string.ascii_lowercase + string.digits
+        return ''.join(secrets.choice(alphabet) for _ in range(length))
 
     def get_database_path(self, db_name: str):
 
