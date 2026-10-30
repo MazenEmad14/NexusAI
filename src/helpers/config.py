@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     VECTOR_DB_DISTANCE_METHOD: str = None
 
     JWT_SECRET_KEY: str
+    # Sign-in / sign-up throttling (counted in MongoDB, so it holds across workers)
+    LOGIN_WINDOW_MINUTES: int = 15
+    LOGIN_MAX_FAILURES_PER_ACCOUNT: int = 5   # per email + client address
+    LOGIN_MAX_FAILURES_PER_IP: int = 20
+    SIGNUP_MAX_PER_IP_PER_HOUR: int = 10
     TOKEN_ENCRYPTION_KEY: Optional[str] = None
     GOOGLE_REDIRECT_URI: str = "http://localhost:5000/api/v1/auth/google/callback"
     FRONTEND_URL: str = "http://localhost:5173"

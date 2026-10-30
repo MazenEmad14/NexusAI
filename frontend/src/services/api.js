@@ -59,11 +59,17 @@ async function request(endpoint, options = {}) {
 
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({ error: res.statusText }));
-        const msg = errBody.error || errBody.message || errBody.detail || `HTTP ${res.status}`;
+        // FastAPI validation errors put a list of {msg} objects in `detail`.
+        const detail = Array.isArray(errBody.detail)
+          ? errBody.detail.map(d => d.msg).filter(Boolean).join('; ')
+          : errBody.detail;
+        const msg = errBody.error || errBody.message || detail || `HTTP ${res.status}`;
 
         // Don't retry 4xx client errors (except 429)
         if (res.status >= 400 && res.status < 500 && res.status !== 429) {
-          if (res.status === 401) {
+          // A 401 from the sign-in / sign-up call means "wrong credentials", not "session expired":
+          // redirecting would reload the page and wipe the error message the user needs to see.
+          if (res.status === 401 && !endpoint.startsWith('/api/v1/auth/local/')) {
             localStorage.removeItem("jwt_token");
             window.location.href = '/auth';
           }
