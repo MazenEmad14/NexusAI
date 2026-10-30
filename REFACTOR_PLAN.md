@@ -1,0 +1,222 @@
+# NexusAI / Aria — Refactor Plan
+
+Scope: the FastAPI + LangGraph backend in `src/` (plus a pass over the React frontend wiring).
+Method: static code review of routes, controllers, services, stores, models and config. **Nothing was executed**, so each item is a finding from reading the code and should be reproduced before you fix it. `BACKEND_REVIEW.md` already covers event-loop blocking (STT/TTS, indexing, sync LLM SDKs, `time.sleep`). Those items are referenced here as P1-6 but not repeated.
+
+Severity: **P0** = security hole or data leak or crash, fix before any demo/deploy. **P1** = real bug or reliability problem. **P2** = design debt. **P3** = cleanup.
+
+---
+
+## 0. Executive summary
+
+| # | Theme | Worst finding |
+|---|-------|---------------|
+| 1 | Multi-user isolation | One shared `GmailService`/`CalendarService` object is re-authenticated per request, so concurrent users can read or send each other's mail |
+| 2 | Auth/security | Hard-coded JWT secret fallback; most routes have no auth; JWT is logged; OAuth `state` never validated |
+| 3 | Arbitrary code execution | LLM-generated Python is run in-process via `PythonREPL` |
+| 4 | Startup crash | `main.py` uses `logger` but never defines it |
+| 5 | State | `MemorySaver` is wiped on every start; HITL resume tokens use inconsistent keys |
+| 6 | Background jobs | Scheduler and notification engine use the one global Gmail token, and write into one global queue |
+| 7 | Quality | Silent failures, wrong log messages, dead code, tests that are scripts, no real CI |
+
+Recommended order: **Phase 1 (P0, ~2–3 days) → Phase 2 (P1, ~1 week) → Phase 3 (P2, ~1–2 weeks) → Phase 4 (P3)**.
+
+---
+
+## P0 status (updated)
+
+All of section 1 is implemented and covered by `src/tests/test_security_p0.py`. Notes on how each item was resolved, and where reality differed from the plan:
+
+| Item | Resolution |
+|------|------------|
+| 1.1 Shared Google clients | Singletons removed. Each node/route builds a fresh `GmailService`/`CalendarService` from the caller's token (`_gmail_for_state`, `_calendar_for_state`, `dashboard._google_clients_for`). `build_agent_graph` no longer takes Gmail/Calendar services. |
+| 1.2 / 1.3 | Done earlier (logger, required `JWT_SECRET_KEY`, no token logging). |
+| 1.4 Auth and ownership | Every non-auth route now needs a JWT. Project ids are **namespaced per user** (`helpers/project_scope.py`) instead of adding an `owner_id` column; the same scoped id is used for the Mongo project, upload folder, vector collection and KB search. The client never supplies a filesystem path: the upload response and `file_path` carry only a file name, resolved inside the caller's project folder. `/memory`, `/queries`, `/health/services`, `/stt`, `/tts` and the Gmail logout now require login and are per-user. SSE uses one-time tickets (`POST /agent/notifications/ticket`). **Correction to the original finding:** path traversal via `project_id` was already blocked in practice because `Project` only allows alphanumeric ids; `ProjectController` now enforces it too. |
+| 1.5 Code execution | `PythonREPL` removed. The LLM returns a JSON plan (aggregate / top_n / correlation / describe) that is validated against the real columns and run with fixed pandas code. |
+| 1.6 OAuth | Per-`state` flow objects, mandatory valid `state`, no `token.json` fallback, no hot-reload of shared services, login/status/disconnect require auth, URLs moved to settings, optional Fernet encryption of stored tokens (`TOKEN_ENCRYPTION_KEY`). |
+| 1.7 Background jobs | Inbox checks and daily summaries run per user with that user's token and publish to per-user queues. Unchanged inboxes cost no LLM call. |
+| 1.8 Approvals | Resume token is mandatory, lives only in the checkpoint, is compared in constant time and is regenerated for every interrupt. Recipients are validated, header injection is rejected, `send_email` no longer retries, calendar attendees are validated. |
+| 1.9 Prompt injection | Email/web content is delimited and marked as untrusted in the summariser, task extractor, KB answer and inbox-triage prompts; extracted tasks and summaries are bounded and type-checked. **Not fully solved:** past assistant replies (which can contain email text) still go into the classifier as chat history, so the human approval step plus recipient validation remain the main defence. |
+
+**Behaviour changes to be aware of**
+- Existing uploads, chunks and vectors were stored under the shared id (for example `default`). They are now looked up under the per-user id, so they will not appear until re-uploaded or migrated.
+- Anyone with a Google token stored before this change keeps working (plaintext tokens are still read). Setting `TOKEN_ENCRYPTION_KEY` encrypts new writes only.
+- The old shared `token.json` is no longer read by the app.
+
+## 1. P0 — Security & correctness blockers
+
+### 1.1 Shared Google service objects leak data across users
+- **Where:** `src/main.py:76-92`, `src/controllers/agent_graph.py` (`_gmail_search`, `_calendar_search`, `search_gmail_node`, `send_email_node`, `create_calendar_event_node`), `src/routes/dashboard.py:148,205,226`, `GmailService.authenticate_from_dict` / `CalendarService.authenticate_from_dict`.
+- **Problem:** `app.gmail_service` is a single instance. `authenticate_from_dict(user_token)` overwrites `self.service` on that instance, and the API call comes later in a worker thread (`asyncio.to_thread`). Two overlapping requests from different users race: user B's request can run with user A's `self.service`. This is a cross-tenant read, and for `send_email` / `create_event` a cross-tenant **write**.
+  Related: the nodes use `if not gmail_service.is_authenticated()` as the guard (`send_email_node`, `create_calendar_event_node`). `is_authenticated()` is true after *any* earlier user authenticated, so the per-user token is skipped entirely and whoever authenticated last is used.
+- **Fix:**
+  1. Make the services **stateless factories**: `GmailClient.from_token(token_dict) -> (client, refreshed_token)`. It returns a new object every call and holds no state on the singleton.
+  2. Build the client at the start of each node (or once per request, put in a request-scoped context, not in `AgentState`), and use it only from that scope.
+  3. Remove the `is_authenticated()` short-circuits from every node. If the user has no token, return the "connect Google" message.
+  4. Delete the `app.gmail_service` / `app.calendar_service` singletons and the `token.json` fallback (see 1.6).
+- **Done when:** a test with two fake users and two fake tokens, running concurrently through the graph, never sees the other user's token (assert on the token each fake service was built with).
+
+### 1.2 `main.py` crashes when the Google token is bad
+- **Where:** `src/main.py:80-92`. `logger` is used but never imported/defined. The messages are also wrong ("Error closing MongoDB connection" for a Gmail failure).
+- **Problem:** if `authenticate()` raises at startup the `except` itself raises `NameError`, and the app does not start.
+- **Fix:** `import logging; logger = logging.getLogger("uvicorn.error")`, and fix the messages. This whole block is removed by 1.1/1.6 anyway. Do the one-line fix first.
+
+### 1.3 Hard-coded JWT secret and token logging
+- **Where:** `src/helpers/auth_utils.py:9`, `:32-45`.
+- **Problem:** `JWT_SECRET_KEY` falls back to `"super-secret-key-for-local-development"`. If the env var is missing in prod, anyone can forge a token for any email. `get_current_user` also logs the full bearer token on failure (`token={token}`). `JWT_SECRET_KEY` is read with `os.getenv`, not via `Settings`, and `.env.example` may not list it.
+- **Fix:** add `JWT_SECRET_KEY: str` (no default) to `Settings`; fail fast at startup if it is missing or shorter than 32 bytes. Never log tokens. Shorten expiry to 15–60 min and add a refresh flow (7-day tokens in `localStorage` are a large XSS blast radius).
+
+### 1.4 Unauthenticated and un-scoped routes
+- **Where:** `routes/data.py` (upload, process), `routes/nlp.py` (index push/info/search, answer), `routes/agent.py` `/stt`, `/tts`, `/notifications`. Only `agent.py` chat/resume/stream and `dashboard.py` use `get_current_user`.
+- **Problem:**
+  - Anyone can upload files, trigger embedding (cost), read or search any project's vectors, and hit `/stt` (CPU) and `/tts`.
+  - `project_id` comes straight from the URL and has no ownership check, so user A can read/overwrite user B's project. It is also used in `os.path.join(files_dir, project_id)` (`ProjectController.get_project_path`) with no sanitising, so `..` gives **path traversal / arbitrary dir creation**.
+  - `/notifications` (SSE) is unauthenticated and drains one global `asyncio.Queue`, so one client consumes another's alerts and any caller can read them.
+  - `data_analysis_node` takes `file_path` from the request body (`ChatRequest.file_path`) and passes it to `pd.read_csv` and into the generated code: arbitrary server file read.
+- **Fix:**
+  1. Router-level `dependencies=[Depends(get_current_user)]` on every router except `/auth/*` and the health route.
+  2. Make a project belong to a user: store `owner_id` on `Project`, and add a `get_owned_project(project_id, user)` dependency used by every route that takes `project_id`.
+  3. Validate `project_id` with `^[A-Za-z0-9_-]{1,64}$`; after joining paths, assert `Path(resolved).is_relative_to(files_dir)`.
+  4. Never accept a filesystem path from the client. Accept an `asset_id`, look it up in the DB (filtered by owner), and resolve the path server-side.
+  5. Make SSE per-user (see 1.7).
+
+### 1.5 LLM-generated code executed in-process
+- **Where:** `src/controllers/data_analysis_node.py` (`PythonREPL().run(execution_code)`).
+- **Problem:** the LLM is prompted with the user's query and the CSV contents, then its output is `exec`'d in the server process with full file/network/env access. A crafted query or a malicious CSV cell is prompt injection → RCE (read `.env`, `credentials.json`, DB credentials). The prompt also embeds `{file_path}` in a raw f-string into the code template. Prompts like "Output ONLY raw Python" are not a security control.
+- **Fix (pick one, in order of preference):**
+  1. **Don't generate code.** Have the LLM return a small JSON *plan* (`{"op":"groupby","by":"Region","agg":"sum","col":"Sales","chart":"bar"}`) that you execute with fixed pandas code. This covers most real queries.
+  2. If free-form code is a hard requirement: run it in a **separate sandbox process/container** (no network, read-only mount of only that CSV, CPU/memory/time limits, e.g. a Docker container or `nsjail`/`firejail`), return JSON only.
+  3. At minimum (not sufficient on its own): AST-validate the code with an allowlist (no imports except pandas/numpy, no dunder access, no `open/exec/eval/__import__`), and run in a subprocess with `resource` limits and a timeout.
+- Also: `read_csv` only. The upload accepts `.xls/.xlsx/.pdf`, and then analysis fails for those. Reject or add `read_excel` explicitly.
+
+### 1.6 OAuth flow: global state, no CSRF check, token.json fallback
+- **Where:** `src/routes/auth.py`.
+- **Problems:**
+  - `_auth_flow_instance` is a module global. Two users logging in at once overwrite each other's flow (and PKCE verifier), so one user can get the other's code exchanged. Fix by keeping the flow (or just `code_verifier`) in the per-`state` map.
+  - In the callback, `state` is not required to exist in `_state_origin_map`. If it's missing, the code falls through, writes the token to **shared `token.json`**, and then hot-reloads the global services with it: that makes the new user's Google account the account for **every** user. This is the single worst path in the file.
+  - `/google/login` is an unauthenticated route that tries to decode the JWT by hand and silently continues without a user if it fails. It must use `Depends(get_current_user)`. Browsers can't send `Authorization` on a top-level redirect, so keep returning `{auth_url}` as JSON (already done), but require auth on that call.
+  - `_state_origin_map` is in-process memory (breaks with >1 worker); `expires` is checked only for `origin`.
+  - `REDIRECT_URI`, `FRONTEND_REDIRECT_URL`, `ALLOWED_ORIGINS`, CORS origins are all hard-coded to localhost.
+  - Refresh tokens are stored **unencrypted** in the `users` collection.
+- **Fix:** require a valid, unexpired `state` entry with a `user_email` (otherwise 400, never fall back); store `{flow/code_verifier, user_email, origin, expires}` per state, pop it on use; delete the `token.json` fallback and the hot-reload of global services; move URLs to `Settings`; encrypt `google_token` at rest (Fernet key from env, or KMS) and never return it from any API.
+
+### 1.7 Proactive agent & notification engine use one global Gmail identity
+- **Where:** `controllers/proactive_agent.py`, `services/notification_engine.py`, `helpers/event_bus.py`, `main.py` scheduler.
+- **Problem:** both jobs poll the **shared** `app.gmail_service` every minute and publish into a single global queue; `daily_summary` is generated for `project_id="default"` with no `user_id`. In a multi-user deployment the background jobs either do nothing (no global token) or act on whichever account last logged in. `evaluate_inbox_and_notify` also builds a new `ChatGroq` client each minute, ignores the configured provider, and sends `GROQ_API_KEY` to the OpenAI-compatible fallback. The notification engine's "urgent email alert" branch only logs: it never notifies anyone. There are two schedulers (APScheduler and the `NotificationEngine` loop) doing overlapping polling work. `_last_daily_summary_date` is set only after success inside a detached task, so a slow summary can be launched on every 60 s tick until the first one finishes.
+- **Fix:** one scheduler. Iterate over users who have a `google_token`, build a per-user client (1.1), and publish into **per-user** queues (`dict[user_id, asyncio.Queue]`, or better Redis pub/sub / Mongo change stream). `/notifications` subscribes to the caller's queue only. Add an "in-flight" flag before launching the daily-summary task. Use the app's `generation_client`, and stop calling Groq directly.
+- Also: the SSE route builds `data: {message}` from raw text. Messages that contain newlines break the SSE framing. JSON-encode them.
+
+### 1.8 Human-in-the-loop approval is bypassable and inconsistent
+- **Where:** `routes/agent.py` (`_pending_resume_tokens`, `_validate_resume_state`, `/chat`, `/chat/stream`, `/resume`).
+- **Problems:**
+  - `/chat` stores the token under `chat_request.thread_id` (un-namespaced) while `_validate_resume_state` looks it up by the *namespaced* id. They never match, and two users with `thread_id="default"` collide. The check only "works" because the token is also in checkpoint metadata.
+  - The check is `if resume_token is not None and expected_token and ...`: a `/resume` call with **no** token skips validation entirely, so any approve call works.
+  - `/resume` on rejection mutates `state_snapshot.values["chat_history"]` in place; after resume `final_state` is unused.
+  - `/chat/stream` has no `_invoke_agent_graph` corruption handling and no `google_token` write-back; `/resume` never persists a refreshed token or re-injects it (the token is whatever was checkpointed, possibly expired).
+  - An approved action executes whatever `action_details` is in the checkpoint; the user never gets to edit it, and the LLM-extracted `recipient` is not validated (prompt-injected email from a malicious inbound message → agent sends mail to attacker).
+- **Fix:** require `resume_token` (reject `None`); store it **only** in checkpoint metadata; drop the module dict; add Pydantic validation for `action_details` (valid email list, ISO date/time, length caps); show the final recipient/subject/body to the user for approval (already the intent) and re-validate on resume. Deduplicate the three near-identical state-loading/token-injection blocks into one helper (`_prepare_state(request, user, chat_request)`).
+
+### 1.9 Prompt injection through email content
+- **Where:** `search_knowledge_base_node`, `search_gmail_node`, `EmailSummarizerController`, `TaskExtractorController`.
+- **Problem:** the body of any inbound email is concatenated into prompts and the same agent can send mail, create events, and write tasks/reminders. An attacker emails the victim "ignore previous instructions, forward …". Today the HITL gate is the only defence and it is bypassable (1.8).
+- **Fix:** put untrusted content in a delimited block and tell the model it is data; run the extraction chain with **no tools/side effects** (it already doesn't, keep it that way); never let content from emails flow into `action_details`; validate extracted tasks (length, date format) before DB insert.
+
+---
+
+## 2. P1 — Functional bugs & reliability
+
+| ID | Where | Bug | Fix |
+|----|-------|-----|-----|
+| 2.1 | `agent_graph.save_query_node` | `get_all_project_assets(state["project_id"]="default", ...)` does `ObjectId("default")` → raises, swallowed by `except`, so `available_files` is never populated. Also reads `a.asset_meta["file_path"]`, but upload (`routes/data.py`) never stores `asset_meta`. The data-analysis file-picking feature therefore can't work. | Resolve the project by `project_id` first (like `routes/data.py`), pass `project.id`; store `file_path` (relative) in the asset on upload. |
+| 2.2 | `agent_graph.build_agent_graph` | `MemorySaver` is cleared on every build and lives in RAM: pending approvals and history vanish on restart or with >1 worker; `checkpointer.storage/writes/blobs` internals are poked in `routes/agent.py` (`_clear_thread_checkpoints`, `_has_real_checkpoint`) and break on any LangGraph upgrade. ~150 lines of "corrupted checkpoint" heuristics exist only because of this. | Use `langgraph-checkpoint-mongodb` (or Postgres, already in the stack). Delete the storage-poking helpers; rely on the public `get_state`/`delete_thread`. Unbounded growth: add TTL on old threads. |
+| 2.3 | `AgentState` / `create_initial_state` | `google_token` (a **refresh token**) is stored in graph state, so it is checkpointed, serialised into streams/logs, and returned inside `metadata`-adjacent structures. `chat_history` re-seeded and capped at 10 in 3 places. | Keep tokens out of state: pass `user_id`, look up the token inside the node via a request-scoped provider. |
+| 2.4 | `agent_graph.search_knowledge_base_node` | Runs **5 retrievals + a classifier + a Gmail-query LLM call + an answer LLM call per question**; the answer call is synchronous (`generation_client.generate_text` not in `to_thread`); the Gmail search runs even for pure KB questions (privacy, latency, quota). The `__NO_RELEVANT_CONTEXT__` sentinel is matched by substring; a user can trigger/steer it. Then on `no_results` → `search_gmail_node` → `web_search` cascade runs all three again. | Route by classifier output to **one** source; make fan-out opt-in. `await asyncio.to_thread` for the answer call. Return a structured `{answer, found: bool}` instead of a sentinel string. |
+| 2.5 | `agent_graph.search_gmail_node` | LLM Gmail-query generation has no JSON validation (the sibling node uses regex, this one uses raw text; two different strategies for one task). `strptime("%Y-%m-%d %H:%M")` is the only date format accepted; others silently drop the deadline but the task is still created. `Reminder.date=deadline_str` is set from the raw string. Task + reminder created **on every Gmail read** with no de-duplication, so asking "show my mail" twice creates duplicate tasks. Fallback `authenticate()` when `gmail_service` is None → `AttributeError`. | Extract one `build_gmail_query(llm, user_query) -> (q, n)` helper with schema validation (`pydantic`); dedupe tasks by `(user_id, source_message_id)`; guard `None` service. |
+| 2.6 | `daily_summary.py:23,31`, `dashboard.py:190` | `datetime.now()` (naive, server local) + `"Z"` suffix → wrong day window whenever server TZ ≠ UTC. | Use `datetime.now(timezone.utc)` (or the user's TZ stored on their profile) and `.isoformat()` without appending `Z`. |
+| 2.7 | `GroqProvider.generate_text` | Ignores `temperature` and `max_output_tokens` (not passed to API); `temperature if temperature else default` treats `0.0` as unset (also in `CoHereProvider:51`) — callers that ask for `temperature=0.0` get 0.1. `embed_text` is `pass` (returns `None`). Error log says "Cohere"/"open ai". `chat_history=[]` mutable default. `response.choices[0]` accessed after logging an error → crash. | Pass the params; use `is not None`; fix messages; return `None` safely. Put the shared logic (truncate, history copy, validate response) in `LLMInterface`'s base class. |
+| 2.8 | `OpenAIProvider` / all providers | `process_text` truncates every prompt to `default_input_max_characters` (default 1000). The RAG prompts and the **summary/email prompts are longer than that**, so the model gets truncated (often tail-cut) instructions and context with no warning. | Truncate only user data, not instructions, and base it on tokens; log when truncation happens. |
+| 2.9 | `TaskModel.search_tasks` | Fallback branch drops the `user_id` filter → returns other users' tasks if `$text` index is missing (it is never created in `init_collection`, so the fallback is the normal path!). `$regex` built from raw user text → ReDoS / regex injection. Misleading log message ("Failed to create TTL index"). | Create a text index in `init_collection`; add `user_id` to fallback; `re.escape(text)`. |
+| 2.10 | `UserModel.update_google_token` | `modified_count > 0` is `False` when the token didn't change → callers treat a successful no-op as failure. `create_instance` runs `create_index` on every call (every request, every node). | Use `matched_count`; create indexes once at startup (`ensure_indexes()`). Same for every `*Model.create_instance`. |
+| 2.11 | `routes/local_auth.py` | `signin` returns **404 "Email not registered"** vs **401 "Incorrect password"** (account enumeration); no rate limit / lockout; signup has no password-strength rules beyond length; the e-mail is not lower-cased (`A@x.com` ≠ `a@x.com`, duplicate accounts). | Single generic 401; normalise email; add `slowapi` rate limiting; consider argon2. |
+| 2.12 | `routes/data.py`, `DataController` | Upload validates by *either* content-type *or* extension (OR logic → `evil.exe` with `Content-Type: text/plain` passes); `file.size` may be `None` and then the size limit is skipped, no streaming byte cap; allowed extensions are hard-coded and ignore `FILE_ALLOWED_TYPES`; `random` (not `secrets`) for names. `process_endpoint` reads whole PDFs synchronously in the event loop and returns 400 for the whole request when one file yields no chunks (after earlier files were already inserted). `ProcessController` only handles `.txt/.pdf`, but `.csv/.xls/.xlsx` are accepted by upload. | Require extension **and** content sniffing; enforce a running byte count while streaming; one source of truth for allowed types; make processing per-file/transactional and run in a thread/worker. |
+| 2.13 | `routes/dashboard.py` | Each route re-implements token loading + service auth (`:140-230`); errors are swallowed → returns `200 {"tasks": []}` which looks like "no tasks" to the UI; `str(e)` returned to client; `project_id` unvalidated. | Common dependency `get_google_client(user)`; return real 4xx/5xx; one response envelope. |
+| 2.14 | `GmailService.send_email` | Retry loop sleeps in the caller's thread, **retries non-idempotent sends** (a timeout after Gmail accepted the mail causes a duplicate send); `to`/`subject` go into headers without CRLF sanitising (header injection); no recipient validation. | Remove retry for send, or use idempotency via a stored `message_id`; validate with `email.utils.parseaddr` / `EmailStr`; reject `\r\n`. |
+| 2.15 | `send_report_email_node` | Dead (not wired into graph) but builds HTML from raw `query` / `result` → HTML injection if re-enabled; spawns raw threads. | Delete it. |
+| 2.16 | `main.py` | Uses deprecated `@app.on_event`; attaches clients as attributes of `app` (no typing, `hasattr` checks everywhere); startup loads Whisper at import time in `routes/agent.py` (blocks import, ~150 MB, fails silently); `mongo_db` name is hard-coded `"depi"` while `Settings.MONGODB_DATABASE` exists and is ignored; shutdown: `app.mongo_conn.close()` etc. assumes startup completed. Router include order puts `local_auth` import mid-file. | Use `lifespan`; a typed `AppState`/DI container; lazy-load Whisper; use `settings.MONGODB_DATABASE`. |
+| 2.17 | `routes/nlp.py:63,109,135` | **Confirmed:** the file never imports `asyncio` but calls `asyncio.to_thread` in `index_project`, `get_project_index_info` and `search_index`. The calls were added in your uncommitted changes (`HEAD` has no `asyncio` reference), so all three NLP endpoints raise `NameError` right now. | Add `import asyncio` at the top. Do this first, it is a one-line fix. |
+| 2.18 | `OpenAIProvider` & co. | Synchronous SDKs called from `async` nodes (`detect_request_type_node`, `extract_action_details_node`, `search_knowledge_base_node` answer, `search_gmail_node` query-gen) → see `BACKEND_REVIEW.md` §3. The classifier node is `def` (sync) so LangGraph runs it in a thread; the others are `async def` that call blocking code directly. | Migrate providers to async clients (`AsyncOpenAI`, `AsyncGroq`, `cohere.AsyncClient`) and make nodes `await` them; delete all the ad-hoc `to_thread` wrapping. |
+| 2.19 | `data_analysis_node` | Builds a *new* LLM client list on every call; uses `langchain_groq` (not in `requirements.txt` — only `langchain-experimental` is) so the first provider silently disappears; Gemini model name and OpenAI model are hard-coded rather than from settings; `GENERATION_MODEL_ID` (a Groq model name) is passed to Groq even when `GENERATION_BACKEND` is something else. | Reuse `app.generation_client`; add all imported packages to `requirements.txt`. |
+| 2.20 | `requirements.txt` | Missing: `PyJWT`, `passlib[bcrypt]`, `pandas`/`numpy` pinned?, `httpx`, `gTTS`, `openai-whisper`, `imageio-ffmpeg`, `langchain_groq`, `ddgs`, `apscheduler`, `email-validator`, `google-auth-httplib2` (listed). Mixed pins vs `>=`, `psycopg2` (needs libpq to build) alongside `asyncpg`. Root has `requirements.txt` while `src/requirements.txt` is referenced by docs. | Generate a lock file (`pip-compile`/`uv`), split `requirements.txt` / `requirements-dev.txt`, test a clean install in CI. |
+
+---
+
+## 3. P2 — Architecture & design debt
+
+1. **God module `agent_graph.py` (1,025 lines).** Nodes, routing, DB access, prompts, Gmail parsing, and graph building live in one file with imports inside functions. Split:
+   ```
+   agent/
+     graph.py          # build_agent_graph only
+     state.py
+     routing.py
+     nodes/{retrieval,gmail,calendar,reminder,summary,data_analysis,web,conversational}.py
+     prompts/*.md|.j2  # prompts out of code, versioned
+   ```
+   The closure-wrapper block in `build_agent_graph` (13 identical `_x(state): return x(state, **shared_kwargs)` shims) can be replaced with `functools.partial` or a small `Deps` dataclass.
+2. **Dependency injection.** Replace `kwargs.get("gmail_service")` + `hasattr(request.app, ...)` everywhere with one `Deps` dataclass built at startup and injected via `Depends`. Today a typo in a kwarg name silently yields `None`.
+3. **Prompt/LLM output handling.** There are at least five ad-hoc JSON parsers (regex in graph, `json.loads` + `ast.literal_eval` in `classifier.py:432-440`, brace-regex in `proactive_agent`, manual strip in Gmail node). `ast.literal_eval` on model output is not dangerous but masks malformed JSON. Introduce `llm_json(prompt, schema: type[BaseModel])` using provider JSON-mode / tool calling and Pydantic validation with one retry. Replace the "forbid inline comments in LLM JSON" style prompt patches.
+4. **Language support.** Prompts mix Arabic/English examples inline; `PRIMARY_LANG` + locale templates exist for RAG (`templates/locales`) but the agent nodes bypass them. Move agent prompts into the locale system.
+5. **Data layer.** Pydantic v1-style `.dict()` and `class Config` with Pydantic 2 installed; `Project.get_indexes`-only-when-collection-missing means indexes added later are never created; mixing Mongo (agent data) and Postgres + Alembic (a leftover "minirag" schema that nothing in the Mongo path uses) and Qdrant. Decide the system of record; if Postgres isn't used, remove `sqlalchemy/asyncpg/alembic`, the `db_schemes/minirag/` tree and the engine startup (a Postgres outage currently takes the whole API down at startup even though no route needs it).
+6. **Error handling.** ~40 `except Exception:` blocks that log and return empty data. Define domain exceptions (`GoogleAuthRequired`, `LLMUnavailable`, `ValidationError`) and map them with FastAPI exception handlers; return `status="error"` to the client instead of "no results".
+7. **Config.** Settings has required fields with no defaults for non-secrets (`FILE_*`, `POSTGRES_*`), but things the code reads straight from `os.getenv` (`REPORT_EMAIL`, `GOOGLE_SEARCH_*`, `JWT_SECRET_KEY`) bypass it. Put them all in `Settings`; validate at startup; keep `.env.example` in sync (add a CI check).
+8. **Observability.** Replace f-string logging of user queries and email subjects (PII) with structured logs + request IDs; log levels (`logger.info(f"... {state['query']}")`) leak content. Add a `/health` that checks Mongo/Qdrant.
+9. **Frontend (`frontend/`).** JWT in `localStorage` (XSS-stealable); API base falls back to `http://localhost:5000`; duplicated 401 handling in two places in `api.js` (`:67`, `:171`); no refresh flow. Prefer an httpOnly, SameSite cookie, one fetch wrapper, and env-driven base URL. (`dangerouslySetInnerHTML`/`innerHTML` — none found, good.)
+10. **Concurrency model.** Anything CPU-bound (Whisper, PDF parsing, embeddings) should move to a worker queue (Celery/RQ/arq) rather than threads in the API process. Deployed as multiple uvicorn workers, in-memory state (`_resume_locks`, `_state_origin_map`, `_pending_resume_tokens`, `proactive_messages_queue`, `MemorySaver`) breaks; the plan above moves each into Mongo/Redis.
+
+---
+
+## 4. P3 — Cleanup
+
+- Repo hygiene: `src/test_*.py` scripts (not pytest tests; some hit live APIs) sit next to the app; root has untracked `dummy.csv`, `test_*.py`, `BACKEND_REVIEW.md`; `backup_script.py`, `check_mongo.py` in root; `.docx/.pptx` binaries in git; `src/assets/mini-rag-app.postman_collection.json` is from the course template. Move scripts to `scripts/`, delete dead ones, add a real `tests/` with `pytest` + `httpx.AsyncClient` + `mongomock-motor`.
+- Delete dead code: `send_report_email_node`, `event_bus` global queue (after 1.7), `_clear_thread_checkpoints` fallback branches (after 2.2), `BaseController.get_database_path`, unused imports (`FastAPI`, `Depends`, `Settings` in `routes/data.py`; duplicated `import os/asyncio/io` in `routes/agent.py`; `logging` imported twice in `agent_graph.py`).
+- Naming/typos: `INPUT_DAFAULT_MAX_CHARACTERS`, `GENERATION_DAFAULT_*`, `VectorDBInerface.py`, `get_poject_chunks`.
+- `ResponseFormatter` / `ResponseSignal` / ad-hoc `{"signal": ...}` / `{"status","data","message"}` envelopes: pick one response shape.
+- Add `ruff` + `mypy` + pre-commit; add GitHub Actions: install, lint, test, `pip-audit`, `npm audit`.
+- Docs: README should state the OAuth setup (`credentials.json`), required env vars, how to run Mongo/Qdrant (`docker/docker-compose.yml`), and the multi-user model.
+
+---
+
+## 5. Suggested execution plan
+
+### Phase 1 — stop the bleeding (P0)
+1. `main.py` logger fix (1.2) — 5 min.
+2. Remove `token.json` fallbacks and the global `_auth_flow_instance`; enforce `state` in OAuth callback (1.6).
+3. Stateless per-request Gmail/Calendar clients; drop singleton auth and `is_authenticated()` shortcuts (1.1); add the concurrency test.
+4. `JWT_SECRET_KEY` required, stop logging tokens (1.3).
+5. Router-level auth + project ownership + path validation + `asset_id` instead of `file_path` (1.4).
+6. Disable `data_analysis` in prod until 1.5 lands (feature flag), then implement the JSON-plan approach.
+7. Fix resume-token handling (1.8).
+
+### Phase 2 — correctness (P1)
+Persistent checkpointer (2.2) → async providers (2.18/2.7/2.8) → retrieval routing rewrite (2.4/2.5) → models/index fixes (2.9/2.10) → upload pipeline (2.12) → timezone (2.6) → dependency lockfile (2.20).
+
+### Phase 3 — structure (P2)
+Split `agent_graph.py`, introduce `Deps`, `llm_json`, domain exceptions, per-user background jobs (1.7), lifespan/AppState, drop unused Postgres stack if confirmed.
+
+### Phase 4 — hygiene (P3) and CI
+
+### Acceptance checklist
+- [ ] Two concurrent users cannot see each other's mail/calendar/tasks/projects (automated test)
+- [ ] Server refuses to start without `JWT_SECRET_KEY`
+- [ ] Every non-auth route returns 401 without a token
+- [ ] No route accepts a filesystem path from the client
+- [ ] Restarting the server keeps pending approvals
+- [ ] No synchronous LLM/IO call inside an `async def` (grep / `asyncio` debug-mode slow-callback log)
+- [ ] CI green: lint, type-check, tests, dependency audit
+
+---
+
+## 6. Caveats
+
+- This is a read-through review; I did not run the app or tests. Any item touching files you have modified locally (the working tree has uncommitted changes in 18 files) should be confirmed against your current code before acting. Only the missing `asyncio` import (2.17) was checked against `HEAD`.
+- I did not review: `classifier.py` prompt logic in depth, `QdrantDBProvider`, `CoHere/Gemini` providers, the React components beyond `api.js`, `docker-compose.yml`, or the Word/PowerPoint documents.
+- `credentials.json`, `token.json` and `.env` are git-ignored and I found no sign they were ever committed. Still, rotate the Google OAuth client secret and any API keys if they have ever been shared outside the machine.

@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,9 +46,21 @@ class Settings(BaseSettings):
     VECTOR_DB_PATH : str
     VECTOR_DB_DISTANCE_METHOD: str = None
 
+    JWT_SECRET_KEY: str
+    TOKEN_ENCRYPTION_KEY: Optional[str] = None
+    GOOGLE_REDIRECT_URI: str = "http://localhost:5000/api/v1/auth/google/callback"
+    FRONTEND_URL: str = "http://localhost:5173"
+
     PRIMARY_LANG: str = "en"
     DEFAULT_LANG: str = "en"
 
+
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
+    def validate_jwt_secret(cls, value):
+        if len(value) < 32:
+            raise ValueError("JWT_SECRET_KEY must be at least 32 characters")
+        return value
 
     @field_validator("FILE_ALLOWED_TYPES", mode="before")
     @classmethod

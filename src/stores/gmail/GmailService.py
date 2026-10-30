@@ -1,15 +1,19 @@
 import os
 import base64
+import json
 import logging
 import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from helpers.exceptions import GoogleAuthRequiredException
+from helpers.validation import has_header_injection, parse_recipients
+import httplib2
+import google_auth_httplib2
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -25,6 +29,10 @@ class GmailService:
     """
     Gmail API wrapper — search, read, and send emails using OAuth2.
     
+    Supports two authentication modes:
+    1. authenticate_from_dict(token_dict) — per-user token stored in MongoDB (preferred)
+    2. authenticate(allow_interactive)   — legacy shared token.json file
+    
     Setup instructions:
     1. Go to Google Cloud Console → APIs & Services → Credentials
     2. Create OAuth 2.0 Client ID (Desktop App)
@@ -39,8 +47,45 @@ class GmailService:
         self.service = None
         self.lock = threading.Lock()
 
+    def authenticate_from_dict(self, token_dict: Dict[str, Any]) -> bool:
+        """
+        Authenticate using a per-user token dict stored in MongoDB.
+        This is the preferred per-user authentication method.
+        
+        Returns True on success, raises GoogleAuthRequiredException if token is invalid.
+        Returns the (possibly refreshed) token_dict so the caller can persist it back.
+        """
+        if not token_dict:
+            raise GoogleAuthRequiredException("No Google token found. Please connect your Google account.")
+
+        try:
+            creds = Credentials.from_authorized_user_info(token_dict, SCOPES)
+        except Exception as e:
+            logger.error(f"Gmail: Failed to load token from dict: {e}")
+            raise GoogleAuthRequiredException("Invalid Google token. Please reconnect your Google account.")
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                logger.info("Gmail: Token from DB expired, refreshing...")
+                try:
+                    creds.refresh(Request())
+                    logger.info("Gmail: Token refreshed successfully.")
+                except Exception as e:
+                    logger.error(f"Gmail: Token refresh failed: {e}")
+                    raise GoogleAuthRequiredException("Google token expired and refresh failed. Please reconnect.")
+            else:
+                raise GoogleAuthRequiredException("Google token is invalid. Please reconnect your Google account.")
+
+        http = httplib2.Http(timeout=30.0)
+        authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+        self.service = build('gmail', 'v1', http=authed_http)
+        logger.info("Gmail API authenticated successfully (per-user DB token)")
+
+        # Return refreshed token dict so caller can save it back to DB
+        return json.loads(creds.to_json())
+
     def authenticate(self, allow_interactive: bool = True):
-        """Authenticate with Gmail API using OAuth2."""
+        """Authenticate with Gmail API using OAuth2 (legacy shared token.json)."""
         creds = None
 
         # Load existing token
@@ -74,7 +119,9 @@ class GmailService:
             except Exception as e:
                 logger.error(f"Gmail: Failed to save token: {e}")
 
-        self.service = build('gmail', 'v1', credentials=creds)
+        http = httplib2.Http(timeout=30.0)
+        authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+        self.service = build('gmail', 'v1', http=authed_http)
         logger.info("Gmail API authenticated successfully")
         return True
 
@@ -138,45 +185,51 @@ class GmailService:
             logger.error(f"Error fetching email {message_id}: {e}")
             return None
 
-    def send_email(self, to: str, subject: str, body: str, 
+    def send_email(self, to: str, subject: str, body: str,
                    html: bool = False) -> Optional[Dict]:
-        """Send an email via Gmail API."""
+        """Send an email via Gmail API.
+
+        Sending is not retried: if a request times out after Gmail accepted the
+        message, a retry would deliver a duplicate.
+        """
         if not self.service:
             logger.error("Gmail service not authenticated")
             return None
 
-        for attempt in range(3):
-            try:
-                if html:
-                    message = MIMEMultipart('alternative')
-                    message.attach(MIMEText(body, 'html'))
-                else:
-                    message = MIMEText(body)
+        recipients = parse_recipients(to)
+        if recipients is None or has_header_injection(to, subject):
+            logger.error("Refusing to send email: invalid recipient or header injection attempt")
+            return None
+        to = ", ".join(recipients)
 
-                message['to'] = to
-                message['subject'] = subject
+        try:
+            if html:
+                message = MIMEMultipart('alternative')
+                message.attach(MIMEText(body, 'html'))
+            else:
+                message = MIMEText(body)
 
-                raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+            message['to'] = to
+            message['subject'] = subject
 
-                with self.lock:
-                    sent_message = self.service.users().messages().send(
-                        userId='me', body={'raw': raw}
-                    ).execute()
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
-                logger.info(f"Email sent successfully. Message ID: {sent_message['id']}")
-                return {
-                    "message_id": sent_message['id'],
-                    "to": to,
-                    "subject": subject,
-                    "status": "sent"
-                }
+            with self.lock:
+                sent_message = self.service.users().messages().send(
+                    userId='me', body={'raw': raw}
+                ).execute()
 
-            except Exception as e:
-                logger.error(f"Error sending email (attempt {attempt+1}): {e}")
-                import time
-                time.sleep(1)
-        
-        return None
+            logger.info(f"Email sent successfully. Message ID: {sent_message['id']}")
+            return {
+                "message_id": sent_message['id'],
+                "to": to,
+                "subject": subject,
+                "status": "sent"
+            }
+
+        except Exception as e:
+            logger.error(f"Error sending email: {e}")
+            return None
 
     def _parse_email(self, message: dict) -> Dict:
         """Parse a raw Gmail message into a clean dictionary."""

@@ -24,7 +24,9 @@ def _recency_score(value) -> float:
     else:
         try:
             dt = datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger("uvicorn.error").warning(f"Error parsing date for recency score: {e}", exc_info=True)
             return 0.2
     age_days = max((datetime.utcnow() - dt).days, 0)
     return max(0.0, 1.0 - min(age_days, 30) / 30)

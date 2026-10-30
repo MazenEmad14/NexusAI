@@ -3,9 +3,10 @@ from typing import Optional, Dict
 
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1)
-    project_id: Optional[str] = "default"
-    thread_id: Optional[str] = "default_thread"
-    file_path: Optional[str] = None
+    project_id: Optional[str] = Field("default", pattern=r"^[A-Za-z0-9]{1,64}$")
+    thread_id: Optional[str] = Field("default_thread", pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    # Only a file *name* from the user's own project is honoured; see data_analysis_node.
+    file_path: Optional[str] = Field(None, max_length=255)
 
 class ChatResponse(BaseModel):
     response: str

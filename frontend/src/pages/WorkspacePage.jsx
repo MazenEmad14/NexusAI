@@ -48,7 +48,8 @@ import {
   getGoogleAuthUrl,
   checkGoogleAuthStatus,
   transcribeAudio,
-  generateSpeech
+  generateSpeech,
+  openNotificationStream
 } from '../services/api';
 
 // Hooks
@@ -221,28 +222,52 @@ export default function WorkspacePage() {
 
   /* ── SSE notifications ── */
   useEffect(() => {
-    const SSE_URL = `${import.meta.env.VITE_API_BASE || 'http://localhost:5000'}/api/v1/agent/notifications`;
-    const eventSource = new EventSource(SSE_URL);
-    
-    eventSource.onmessage = (event) => {
-      if (event.data) {
-        // Bonus Action: Show toast notification
+    let eventSource = null;
+    let retryTimer = null;
+    let cancelled = false;
+
+    const connect = async () => {
+      try {
+        eventSource = await openNotificationStream();
+      } catch {
+        if (!cancelled) retryTimer = setTimeout(connect, 15000);
+        return;
+      }
+      if (cancelled) {
+        eventSource.close();
+        return;
+      }
+
+      eventSource.onmessage = (event) => {
+        if (!event.data) return;
+        let content = event.data;
+        try { content = JSON.parse(event.data); } catch { /* plain text */ }
+
         showInfo('New Proactive Alert');
-        
-        // Action 1: Append to chat UI
         setMessages(prev => [...prev, {
           id: Date.now() + Math.random(),
           role: 'assistant',
-          content: event.data,
+          content,
           isProactive: true,
           agents: [{ label: 'Proactive', icon: Brain, color: 'text-amber-400', bg: 'bg-amber-400/10' }],
           autoPlayTTS: false
         }]);
-      }
+      };
+
+      // A ticket is single-use, so a dropped stream needs a fresh ticket, not the
+      // browser's automatic reconnect.
+      eventSource.onerror = () => {
+        eventSource.close();
+        if (!cancelled) retryTimer = setTimeout(connect, 5000);
+      };
     };
 
+    connect();
+
     return () => {
-      eventSource.close();
+      cancelled = true;
+      clearTimeout(retryTimer);
+      if (eventSource) eventSource.close();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

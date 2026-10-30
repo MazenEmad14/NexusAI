@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Depends, UploadFile, status, Request
+from fastapi import APIRouter, Depends, UploadFile, status, Request
 from fastapi.responses import JSONResponse
 import os
 from helpers.config import get_settings, Settings
@@ -6,6 +6,8 @@ from controllers import DataController, ProjectController, ProcessController
 import aiofiles
 from models import ResponseSignal
 import logging
+from helpers.auth_utils import get_current_user
+from helpers.project_scope import scoped_project_dependency
 from .schemes.data import ProcessRequest
 from models.ProjectModel import ProjectModel
 from models.ChunkModel import ChunkModel
@@ -18,10 +20,12 @@ logger = logging.getLogger('uvicorn.error')
 data_router = APIRouter(
     prefix="/api/v1/data",
     tags=["api_v1", "data"],
+    dependencies=[Depends(get_current_user)],
 )
 
 @data_router.post("/upload/{project_id}")
-async def upload_data(request: Request, project_id: str, file: UploadFile,
+async def upload_data(request: Request, file: UploadFile,
+                      project_id: str = Depends(scoped_project_dependency),
                       app_settings: Settings = Depends(get_settings)):
         
     
@@ -81,18 +85,16 @@ async def upload_data(request: Request, project_id: str, file: UploadFile,
 
     asset_record = await asset_model.create_asset(asset=asset_resource)
 
-    absolute_file_path = os.path.abspath(file_path)
-
     return JSONResponse(
             content={
                 "signal": ResponseSignal.FILE_UPLOAD_SUCCESS.value,
                 "file_id": str(asset_record.id),
-                "file_path": absolute_file_path,
+                "file_path": file_id,
             }
         )
 
 @data_router.post("/process/{project_id}")
-async def process_endpoint(request: Request, project_id: str, process_request: ProcessRequest):
+async def process_endpoint(request: Request, process_request: ProcessRequest, project_id: str = Depends(scoped_project_dependency)):
 
     chunk_size = process_request.chunk_size
     overlap_size = process_request.overlap_size

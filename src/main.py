@@ -1,3 +1,4 @@
+import logging
 import sys
 from pathlib import Path
 from fastapi import FastAPI
@@ -13,13 +14,12 @@ from stores.llm.templates.template_parser import TemplateParser
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-# Import new Secretary AI services
-from stores.gmail.GmailService import GmailService
-from stores.calendar.CalendarService import CalendarService
 from controllers.agent_graph import build_agent_graph
 from services.notification_engine import NotificationEngine
 from controllers.proactive_agent import evaluate_inbox_and_notify
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI()
 
@@ -73,37 +73,19 @@ async def startup_db_client():
         language=settings.PRIMARY_LANG,
         default_language=settings.DEFAULT_LANG)
 
-    # 7. Google Services Authentication (Optional on startup, but recommended to load tokens)
-    app.gmail_service = GmailService()
-    # Try to load existing token silently
-    if Path(app.gmail_service.token_path).exists():
-        try:
-            app.gmail_service.authenticate(allow_interactive=False)
-        except Exception:
-            pass
-
-    app.calendar_service = CalendarService()
-    if Path(app.calendar_service.token_path).exists():
-        try:
-            app.calendar_service.authenticate(allow_interactive=False)
-        except Exception:
-            pass
-
-    # 8. Compile LangGraph Agent
+    # 7. Compile LangGraph Agent
     app.agent_graph = build_agent_graph(
         db_client=app.mongo_db,
         generation_client=app.generation_client,
         embedding_client=app.embedding_client,
         vectordb_client=app.vectordb_client,
         template_parser=app.template_parser,
-        gmail_service=app.gmail_service,
-        calendar_service=app.calendar_service
     )
 
     app.notification_engine = NotificationEngine(app)
     app.notification_engine.start()
 
-    # 9. Proactive Agent Scheduler
+    # 8. Proactive Agent Scheduler
     app.scheduler = AsyncIOScheduler()
     app.scheduler.add_job(evaluate_inbox_and_notify, 'interval', minutes=1, args=[app])
     app.scheduler.start()

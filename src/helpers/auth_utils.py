@@ -2,11 +2,11 @@ from passlib.context import CryptContext
 import jwt
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-import os
+from helpers.config import get_settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "super-secret-key-for-local-dev")
+SECRET_KEY = get_settings().JWT_SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
 
@@ -46,7 +46,7 @@ async def get_current_user(request: Request, credentials: HTTPAuthorizationCrede
     token = credentials.credentials
     decoded = decode_access_token(token)
     if not decoded or "sub" not in decoded:
-        logger.error(f"DEBUG: get_current_user 401 - Invalid token. decoded={decoded}, token={token}")
+        logger.warning("get_current_user 401 - invalid or malformed token")
         raise HTTPException(status_code=401, detail="Invalid token")
     
     email = decoded["sub"]
