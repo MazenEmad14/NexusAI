@@ -43,6 +43,15 @@ All of section 1 is implemented and covered by `src/tests/test_security_p0.py`. 
 - Anyone with a Google token stored before this change keeps working (plaintext tokens are still read). Setting `TOKEN_ENCRYPTION_KEY` encrypts new writes only.
 - The old shared `token.json` is no longer read by the app.
 
+## P1 status
+
+| Item | Status |
+|------|--------|
+| 2.2 Persistent checkpointer | **Done.** `MemorySaver` is replaced by `stores/checkpoint/MongoCheckpointer.py`, a small async Motor-based saver (the official `langgraph-checkpoint-mongodb` would force a major langchain/langgraph upgrade). Pending approvals and chat history now survive restarts and are shared between workers. The ~150 lines of checkpoint-storage heuristics in `routes/agent.py` are gone; routes use `aget_state` / `aupdate_state` / `ainvoke`. Threads idle for 30 days are purged daily. |
+| 2.3 Token in graph state | **Done as part of 2.2** (it would otherwise have put refresh tokens in the checkpoint collection). The Google token now travels in a request-scoped context (`helpers/google_context.py`) and is no longer in `AgentState`. |
+
+Known remaining issue related to 2.2: checkpoints store the full graph state, which includes `knowledge_results` and `emails` (email bodies). Trim those before they reach state if you want less personal data at rest.
+
 ## 1. P0 — Security & correctness blockers
 
 ### 1.1 Shared Google service objects leak data across users

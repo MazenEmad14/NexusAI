@@ -33,7 +33,3 @@ class AgentState(TypedDict):
     # ---- Metadata ----
     metadata: Dict                      # Additional context: source, processing_time, etc.
     project_id: str                     # Current project context
-
-    # ---- Per-User Google Auth ----
-    google_token: Optional[Dict[str, Any]]  # Per-user OAuth2 token dict (from MongoDB)
-                                             # Replaces shared token.json — enables multi-user Google isolation

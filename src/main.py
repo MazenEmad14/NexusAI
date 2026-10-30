@@ -15,11 +15,15 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 from controllers.agent_graph import build_agent_graph
+from stores.checkpoint.MongoCheckpointer import MongoCheckpointer
 from services.notification_engine import NotificationEngine
 from controllers.proactive_agent import evaluate_inbox_and_notify
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logger = logging.getLogger("uvicorn.error")
+
+# Agent conversations idle for longer than this are deleted from the checkpoint store.
+THREAD_RETENTION_DAYS = 30
 
 app = FastAPI()
 
@@ -73,13 +77,17 @@ async def startup_db_client():
         language=settings.PRIMARY_LANG,
         default_language=settings.DEFAULT_LANG)
 
-    # 7. Compile LangGraph Agent
+    # 7. Compile LangGraph Agent with a persistent (MongoDB) checkpointer, so pending
+    # approvals and chat history survive restarts.
+    app.checkpointer = MongoCheckpointer(app.mongo_db)
+    await app.checkpointer.setup()
     app.agent_graph = build_agent_graph(
         db_client=app.mongo_db,
         generation_client=app.generation_client,
         embedding_client=app.embedding_client,
         vectordb_client=app.vectordb_client,
         template_parser=app.template_parser,
+        checkpointer=app.checkpointer,
     )
 
     app.notification_engine = NotificationEngine(app)
@@ -88,6 +96,7 @@ async def startup_db_client():
     # 8. Proactive Agent Scheduler
     app.scheduler = AsyncIOScheduler()
     app.scheduler.add_job(evaluate_inbox_and_notify, 'interval', minutes=1, args=[app])
+    app.scheduler.add_job(app.checkpointer.purge_stale_threads, 'interval', hours=24, args=[THREAD_RETENTION_DAYS])
     app.scheduler.start()
 
 

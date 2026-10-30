@@ -269,7 +269,7 @@ async def get_thread_memory(request: Request, thread_id: str, current_user: dict
         namespaced_thread = f"{str(current_user['_id'])}_{thread_id}"
         config = {"configurable": {"thread_id": namespaced_thread}}
         try:
-            state_snapshot = agent_graph.get_state(config)
+            state_snapshot = await agent_graph.aget_state(config)
             chat_history = state_snapshot.values.get("chat_history", []) if state_snapshot and state_snapshot.values else []
         except Exception:
             logger.error("Error fetching thread memory", exc_info=True)
