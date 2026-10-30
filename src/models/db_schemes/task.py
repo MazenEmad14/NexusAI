@@ -12,4 +12,5 @@ class Task(BaseModel):
     status: str = Field(default="pending") # "pending", "completed"
     source_email_id: Optional[str] = Field(default=None)
     source_subject: Optional[str] = Field(default=None)
+    description_key: Optional[str] = Field(default=None)  # normalised description, used to avoid duplicates
     created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -9,6 +9,7 @@ class TaskModel(BaseDataModel):
     def __init__(self, db_client):
         super().__init__(db_client=db_client)
         self.collection = self.db_client.tasks
+        self.scans = self.db_client.task_email_scans  # emails already mined for tasks
 
     @classmethod
     async def create_instance(cls, db_client):
@@ -22,6 +23,8 @@ class TaskModel(BaseDataModel):
         await self.collection.create_index([("status", 1)])
         await self.collection.create_index([("priority", 1)])
         await self.collection.create_index([("deadline", 1)])
+        await self.collection.create_index([("user_id", 1), ("project_id", 1), ("description_key", 1)])
+        await self.scans.create_index([("user_id", 1), ("message_id", 1)], unique=True)
 
     async def create_task(self, task: Task) -> bool:
         try:
@@ -31,6 +34,41 @@ class TaskModel(BaseDataModel):
         except Exception as e:
             logger.error(f"Error creating task: {e}")
             return False
+
+    @staticmethod
+    def make_description_key(description: str) -> str:
+        return " ".join((description or "").lower().split())
+
+    async def create_task_if_new(self, task: Task) -> bool:
+        """Insert unless the user already has a pending task with the same description."""
+        task.description_key = self.make_description_key(task.description)
+        existing = await self.collection.find_one({
+            "user_id": task.user_id,
+            "project_id": task.project_id,
+            "description_key": task.description_key,
+            "status": "pending",
+        })
+        if existing:
+            return False
+        return await self.create_task(task)
+
+    async def filter_unscanned_emails(self, user_id: str, message_ids: list[str]) -> list[str]:
+        """Return the message ids that have not been mined for tasks yet."""
+        if not message_ids:
+            return []
+        seen = {
+            doc["message_id"]
+            async for doc in self.scans.find({"user_id": user_id, "message_id": {"$in": message_ids}}, {"message_id": 1})
+        }
+        return [m for m in message_ids if m not in seen]
+
+    async def mark_emails_scanned(self, user_id: str, message_ids: list[str]) -> None:
+        for message_id in message_ids:
+            await self.scans.update_one(
+                {"user_id": user_id, "message_id": message_id},
+                {"$setOnInsert": {"user_id": user_id, "message_id": message_id}},
+                upsert=True,
+            )
 
     async def get_pending_tasks(self, project_id: str, user_id: str, limit: int = 10) -> list[Task]:
         try:
