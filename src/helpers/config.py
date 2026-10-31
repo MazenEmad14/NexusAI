@@ -49,11 +49,6 @@ class Settings(BaseSettings):
     # ── databases ────────────────────────────────────────────────────────────
     MONGODB_URL: str = "mongodb://localhost:27017/"
     MONGODB_DATABASE: str = "depi"
-    POSTGRES_USERNAME: str
-    POSTGRES_PASSWORD: str
-    POSTGRES_HOST: str
-    POSTGRES_PORT: int = Field(gt=0, lt=65536)
-    POSTGRES_MAIN_DATABASE: str
     VECTOR_DB_BACKEND: str
     VECTOR_DB_PATH: str
     VECTOR_DB_DISTANCE_METHOD: str = "cosine"

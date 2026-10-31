@@ -14,8 +14,6 @@ from fastapi import HTTPException, Request, status
 class Services:
     mongo_conn: Any            # motor client
     mongo_db: Any              # motor database (settings.MONGODB_DATABASE)
-    db_engine: Any             # SQLAlchemy async engine
-    db_client: Any             # SQLAlchemy session factory
     generation_client: Any     # LLM provider used for generation
     embedding_client: Any      # LLM provider used for embeddings
     vectordb_client: Any

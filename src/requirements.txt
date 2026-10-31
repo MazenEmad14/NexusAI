@@ -21,8 +21,6 @@ httpx==0.28.1
 motor==3.7.1
 pymongo==4.11.3
 qdrant-client==1.10.1
-SQLAlchemy==2.0.36                # engine created at startup (see REFACTOR_PLAN.md 3.5)
-asyncpg==0.30.0
 
 # ── LLM providers and agent ──────────────────────────────────────────────────
 openai==1.57.4

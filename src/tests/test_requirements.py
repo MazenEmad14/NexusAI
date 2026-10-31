@@ -18,14 +18,14 @@ IMPORT_TO_DIST = {
     "langchain_google_genai": "langchain-google-genai", "langchain_text_splitters": "langchain-text-splitters",
     "langgraph": "langgraph", "motor": "motor", "openai": "openai", "pandas": "pandas",
     "pydantic": "pydantic", "pydantic_settings": "pydantic-settings", "pymongo": "pymongo",
-    "qdrant_client": "qdrant-client", "sqlalchemy": "sqlalchemy",
+    "qdrant_client": "qdrant-client",
     # optional extras (requirements-voice.txt)
     "whisper": "openai-whisper", "imageio_ffmpeg": "imageio-ffmpeg",
 }
 
 # Needed at runtime although nothing imports them by name.
 RUNTIME_EXTRAS = {
-    "uvicorn", "python-multipart", "email-validator", "asyncpg", "openpyxl", "xlrd", "tzdata",
+    "uvicorn", "python-multipart", "email-validator", "openpyxl", "xlrd", "tzdata",
     "pymupdf",  # loaded lazily by langchain's PyMuPDFLoader
 }
 

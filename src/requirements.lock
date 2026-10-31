@@ -11,7 +11,6 @@ annotated-types==0.8.0
 anyio==4.15.1
 APScheduler==3.11.3
 async-timeout==4.0.3
-asyncpg==0.30.0
 attrs==26.1.0
 bcrypt==4.2.1
 boto3==1.43.123
