@@ -309,7 +309,6 @@ def test_same_task_from_a_new_email_is_not_duplicated_and_users_stay_separate(mo
 @needs_mongo
 def test_relative_deadlines_are_resolved_in_the_users_zone(monkeypatch):
     from zoneinfo import ZoneInfo
-    from datetime import timezone
 
     # 23:30 on 1 June in Auckland (UTC+12): the server may be on a different date entirely.
     fixed = datetime(2026, 6, 1, 23, 30, tzinfo=ZoneInfo("Pacific/Auckland"))

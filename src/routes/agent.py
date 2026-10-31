@@ -11,9 +11,7 @@ from agent import create_initial_state
 from models.enums.ResponseEnums import ResponseSignal
 from fastapi.responses import StreamingResponse
 import io
-import asyncio
 import hmac
-from stores.llm.providers.OpenAIProvider import OpenAIProvider
 from helpers.config import get_settings
 from helpers.services import services_of
 from helpers.event_bus import get_user_queue, issue_ticket, redeem_ticket

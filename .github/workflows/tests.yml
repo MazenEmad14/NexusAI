@@ -36,6 +36,19 @@ jobs:
       - name: Create the settings file from the example
         run: cp src/.env.example src/.env
 
+      - name: Lint
+        run: python -m ruff check src scripts
+
+      - name: Type check (report only: there are existing findings to work down)
+        run: python -m mypy src --cache-dir=/dev/null
+        continue-on-error: true
+
+      - name: Audit the pinned dependencies (report only)
+        run: |
+          pip install pip-audit
+          pip-audit -r src/requirements.lock
+        continue-on-error: true
+
       - name: Run the backend tests
         run: python -m pytest src/tests -q
 
@@ -53,4 +66,5 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm run build

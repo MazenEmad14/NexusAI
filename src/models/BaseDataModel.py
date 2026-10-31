@@ -1,6 +1,6 @@
 import logging
 
-from helpers.config import get_settings, Settings
+from helpers.config import get_settings
 
 logger = logging.getLogger("uvicorn.error")
 

@@ -1,3 +1,5 @@
 # Everything needed to run the tests:  pip install -r src/requirements-dev.txt
 -r requirements.txt
 pytest==8.3.4
+ruff==0.8.4          # lint (ruff.toml)
+mypy==1.14.1         # type check, report only for now (mypy.ini)

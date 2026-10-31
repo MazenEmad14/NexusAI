@@ -1,4 +1,4 @@
-from helpers.config import get_settings, Settings
+from helpers.config import get_settings
 import os
 import secrets
 import string

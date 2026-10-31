@@ -1,5 +1,4 @@
 import requests
-import json
 
 def test_classifier():
     url = "http://localhost:5000/api/v1/agent/chat/stream"

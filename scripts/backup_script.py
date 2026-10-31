@@ -3,8 +3,8 @@ import os
 from motor.motor_asyncio import AsyncIOMotorClient
 
 async def backup_data():
-    client = AsyncIOMotorClient("mongodb://admin:admin@localhost:27007/?authSource=admin")
-    db = client["depi"]
+    client = AsyncIOMotorClient(os.environ.get("MONGODB_URL", "mongodb://localhost:27017/"))
+    db = client[os.environ.get("MONGODB_DATABASE", "depi")]
 
     # Backup tasks
     tasks = await db["tasks"].find({}).to_list(length=None)

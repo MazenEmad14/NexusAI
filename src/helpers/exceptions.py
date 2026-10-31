@@ -5,7 +5,6 @@ in helpers/error_handlers.py turn any that reach the edge into a clean JSON erro
 turns the ones it can explain (`LLMUnavailable`, `GoogleAuthRequiredException`) into an error reply.
 Internal details stay in the exception's text for the logs; `public_message` is what is shown.
 """
-from typing import Optional
 
 
 class DomainError(Exception):

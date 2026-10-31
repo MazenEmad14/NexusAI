@@ -1,5 +1,4 @@
 import requests
-import json
 
 base_url = "http://localhost:5000/api/v1/auth/local"
 

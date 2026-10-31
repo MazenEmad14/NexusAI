@@ -35,10 +35,8 @@ mini-RAG-APP/ (NexusAI Workspace)
 |   `-- requirements-voice.txt  (optional speech-to-text)
 |-- frontend/               # React (Vite) frontend application
 |-- docker/                 # Docker Compose configurations (e.g., MongoDB)
-|-- tests/                  # Pytest unit and E2E integration tests
 |-- docs/                   # Additional documentation
-|-- backup_script.py        # Utility script for backups
-|-- check_mongo.py          # Utility script to verify MongoDB connection
+|-- scripts/                # Utility scripts (backup, MongoDB check) and manual smoke scripts, not part of the tests
 |-- pytest.ini              # Pytest configuration
 `-- README.md
 ```
@@ -120,8 +118,22 @@ mini-RAG-APP/ (NexusAI Workspace)
    inconsistent (for example no API key for the chosen model backend). Names in `.env` that match no setting
    are reported as probable typos. Every setting is documented in `src/.env.example`.
 
-4. **Google Credentials (Optional but required for Gmail/Calendar):**
-   Place your Google `credentials.json` file inside the `src/` directory. On startup, the app will request authorization to generate `token.json` and `calendar_token.json`.
+4. **MongoDB and the vector store:**
+   MongoDB is the system of record (users, sessions, projects, tasks, checkpoints, jobs). Start one locally, or
+   with Docker: `docker compose -f docker/docker-compose.yml up -d` (set `MONGO_INITDB_ROOT_USERNAME` and
+   `MONGO_INITDB_ROOT_PASSWORD` in `docker/.env`, and use that login in `MONGODB_URL`; the container is published
+   on port 27007). Vectors are stored in Qdrant, embedded in the app and kept in the folder `VECTOR_DB_PATH`.
+
+5. **Google sign-in (optional, needed for Gmail and Calendar):**
+   Create an OAuth client ("Web application") in Google Cloud, enable the Gmail and Calendar APIs, add
+   `GOOGLE_REDIRECT_URI` (default `http://localhost:5000/api/v1/auth/google/callback`) as an authorised redirect
+   URI, download the client file as `src/credentials.json`, and list your frontend origin in `CORS_ORIGINS`.
+   Each user connects their own Google account from the app; their token is stored with their account
+   (encrypted when `TOKEN_ENCRYPTION_KEY` is set). There is no shared `token.json`.
+
+**The multi-user model.** Every user has their own account, session, Google connection, projects, uploaded files,
+vector collection, tasks, reminders, time zone and background jobs. A project name sent by a client is only a
+name: the server scopes it to the signed-in user, so users cannot read or overwrite each other's data.
 
 ## Logs and health
 
@@ -197,10 +209,13 @@ Once authenticated with Google, NexusAI runs a background scheduler (every 1 min
 
 ## Testing
 
-Run the end-to-end integration test suite using pytest:
+Install the dev tools (`pip install -r src/requirements-dev.txt -c src/requirements.lock`), then:
 
 ```bash
-pytest tests/
+pytest          # the tests in src/tests; they need a local MongoDB and skip themselves without one
+ruff check src scripts   # lint (also runs in CI and, if you install pre-commit, on every commit)
+mypy src        # type check; 174 existing findings, so CI reports it without failing
+cd frontend && npm test
 ```
 
 ## License
