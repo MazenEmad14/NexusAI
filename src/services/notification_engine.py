@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import time as datetime_time
 
+from helpers.config import get_settings
 from helpers.event_bus import publish
 from helpers.timezones import local_now
 from models.UserModel import UserModel
@@ -30,7 +31,7 @@ def _build_clients(token: dict):
 
 
 class NotificationEngine:
-    """Delivers each user's daily summary once per day, after 08:00 server time."""
+    """Delivers each user's daily summary once per local day, from DAILY_SUMMARY_HOUR (default 08:00) in their time zone."""
 
     def __init__(self, services, poll_seconds: int = 60):
         self.services = services
@@ -66,7 +67,7 @@ class NotificationEngine:
             user_id = user["user_id"]
             # 08:00 and "today" are the user's own, not the server's.
             now = local_now(user.get("timezone"))
-            if now.time() < datetime_time(hour=8) or self._last_summary_date.get(user_id) == now.date():
+            if now.time() < datetime_time(hour=get_settings().DAILY_SUMMARY_HOUR) or self._last_summary_date.get(user_id) == now.date():
                 continue
             # Mark before launching so a slow summary is not started again on the next tick.
             self._last_summary_date[user_id] = now.date()

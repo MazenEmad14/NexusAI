@@ -10,7 +10,7 @@ ROOT = SRC.parent
 # Top-level import name -> the distribution that provides it.
 IMPORT_TO_DIST = {
     "aiofiles": "aiofiles", "apscheduler": "apscheduler", "bcrypt": "bcrypt", "bson": "pymongo",
-    "cohere": "cohere", "cryptography": "cryptography", "ddgs": "ddgs", "fastapi": "fastapi",
+    "cohere": "cohere", "cryptography": "cryptography", "ddgs": "ddgs", "dotenv": "python-dotenv", "fastapi": "fastapi",
     "google": "google-auth", "google_auth_httplib2": "google-auth-httplib2",
     "google_auth_oauthlib": "google-auth-oauthlib", "googleapiclient": "google-api-python-client",
     "groq": "groq", "gtts": "gtts", "httplib2": "httplib2", "httpx": "httpx", "jwt": "pyjwt",

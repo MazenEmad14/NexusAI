@@ -1,7 +1,7 @@
-import os
 import logging
 import asyncio
 from agent.deps import AgentDeps
+from helpers.config import get_settings
 from agent.errors import fail
 from helpers.exceptions import ExternalServiceError
 from agent.state import AgentState
@@ -13,8 +13,9 @@ async def web_search_node(state: AgentState, deps: AgentDeps) -> AgentState:
     generation_client = deps.generation_client
     query = state["query"]
     
-    api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
-    cx = os.getenv("GOOGLE_SEARCH_CX")
+    settings = get_settings()
+    api_key = settings.GOOGLE_SEARCH_API_KEY
+    cx = settings.GOOGLE_SEARCH_CX
     
     results = []
     search_error = None

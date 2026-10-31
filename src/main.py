@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 
 from agent import AgentDeps, build_agent_graph
 from controllers.proactive_agent import evaluate_inbox_and_notify
-from helpers.config import get_settings
+from helpers.config import get_settings, unknown_env_keys
 from helpers.error_handlers import install_error_handlers
 from helpers.services import Services
 from models.UserModel import UserModel
@@ -28,9 +28,6 @@ from stores.llm.templates.template_parser import TemplateParser
 from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
 
 logger = logging.getLogger("uvicorn.error")
-
-# Agent conversations idle for longer than this are deleted from the checkpoint store.
-THREAD_RETENTION_DAYS = 30
 
 
 async def _close_quietly(name: str, close):
@@ -49,6 +46,9 @@ async def lifespan(app: FastAPI):
     startup does not leave a database connection, scheduler or storage lock behind.
     """
     settings = get_settings()
+    settings.ensure_valid()  # refuse to start with a readable list of what is wrong, not fail on a later request
+    for name in unknown_env_keys():
+        logger.warning(f"{name} in the env file matches no setting and is ignored (a typo?)")
 
     async with AsyncExitStack() as stack:
         # 1. MongoDB: agent data, users, checkpoints
@@ -119,8 +119,10 @@ async def lifespan(app: FastAPI):
         stack.push_async_callback(services.notification_engine.stop)
 
         services.scheduler = AsyncIOScheduler()
-        services.scheduler.add_job(evaluate_inbox_and_notify, "interval", minutes=1, args=[services])
-        services.scheduler.add_job(checkpointer.purge_stale_threads, "interval", hours=24, args=[THREAD_RETENTION_DAYS])
+        services.scheduler.add_job(
+            evaluate_inbox_and_notify, "interval", minutes=settings.INBOX_CHECK_INTERVAL_MINUTES, args=[services])
+        services.scheduler.add_job(
+            checkpointer.purge_stale_threads, "interval", hours=24, args=[settings.THREAD_RETENTION_DAYS])
         services.scheduler.start()
         stack.callback(services.scheduler.shutdown)
 

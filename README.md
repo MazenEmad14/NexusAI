@@ -116,6 +116,10 @@ mini-RAG-APP/ (NexusAI Workspace)
 
    Update `src/.env` with your API keys, MongoDB URI, and preferred models.
 
+   The app checks the settings when it starts and refuses to run with a clear list of anything missing or
+   inconsistent (for example no API key for the chosen model backend). Names in `.env` that match no setting
+   are reported as probable typos. Every setting is documented in `src/.env.example`.
+
 4. **Google Credentials (Optional but required for Gmail/Calendar):**
    Place your Google `credentials.json` file inside the `src/` directory. On startup, the app will request authorization to generate `token.json` and `calendar_token.json`.
 
