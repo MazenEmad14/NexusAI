@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sys
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -13,28 +14,19 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from agent import AgentDeps, build_agent_graph
 from controllers.proactive_agent import evaluate_inbox_and_notify
+from helpers.clients import open_clients
 from helpers.config import get_settings, unknown_env_keys
 from helpers.error_handlers import install_error_handlers
 from helpers.logging_setup import RequestContextMiddleware, configure_logging
 from helpers.services import Services
 from models.UserModel import UserModel
 from models.indexes import ensure_all_indexes
-from routes import agent as agent_routes, auth, base, dashboard, data, health, local_auth, nlp
+from routes import agent as agent_routes, auth, base, dashboard, data, health, jobs, local_auth, nlp
+from services.jobs import JobWorker
 from services.notification_engine import NotificationEngine
 from stores.checkpoint.MongoCheckpointer import MongoCheckpointer
-from stores.llm.LLMProviderFactory import LLMProviderFactory
-from stores.llm.templates.template_parser import TemplateParser
-from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
 
 logger = logging.getLogger("uvicorn.error")
-
-
-async def _close_quietly(name: str, close):
-    """Shutdown must reach every resource: one that fails to close is logged, not fatal."""
-    try:
-        await close()
-    except Exception:
-        logger.warning(f"Failed to close {name}", exc_info=True)
 
 
 @asynccontextmanager
@@ -58,24 +50,8 @@ async def lifespan(app: FastAPI):
         await ensure_all_indexes(mongo_db)
         await UserModel(mongo_db).normalize_existing_emails()
 
-        # 3. LLM clients
-        llm_factory = LLMProviderFactory(settings)
-        generation_client = llm_factory.create(provider=settings.GENERATION_BACKEND)
-        generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
-        stack.push_async_callback(lambda: _close_quietly("the generation client", generation_client.aclose))
-
-        embedding_client = llm_factory.create(provider=settings.EMBEDDING_BACKEND)
-        embedding_client.set_embedding_model(
-            model_id=settings.EMBEDDING_MODEL_ID, embedding_size=settings.EMBEDDING_MODEL_SIZE
-        )
-        stack.push_async_callback(lambda: _close_quietly("the embedding client", embedding_client.aclose))
-
-        # 4. Vector database
-        vectordb_client = VectorDBProviderFactory(settings).create(provider=settings.VECTOR_DB_BACKEND)
-        vectordb_client.connect()
-        stack.callback(vectordb_client.disconnect)
-
-        template_parser = TemplateParser(language=settings.PRIMARY_LANG, default_language=settings.DEFAULT_LANG)
+        # 3. LLM clients, the vector database and the prompt templates
+        generation_client, embedding_client, vectordb_client, template_parser = open_clients(settings, stack)
 
         # 5. The agent, with a persistent checkpointer so pending approvals and chat history
         # survive restarts.
@@ -116,6 +92,13 @@ async def lifespan(app: FastAPI):
         services.scheduler.start()
         stack.callback(services.scheduler.shutdown)
 
+        # The job queue worker (document processing, indexing). With JOB_WORKER_MODE=external, run worker.py instead.
+        if settings.JOB_WORKER_MODE == "embedded":
+            worker = JobWorker(services, mongo_db, settings)
+            worker_task = asyncio.create_task(worker.run())
+            stack.push_async_callback(worker.stop)
+            stack.callback(worker_task.cancel)
+
         # Requests are only served once everything above exists.
         app.state.services = services
         try:
@@ -144,6 +127,7 @@ app.include_router(base.base_router)
 app.include_router(auth.auth_router)
 app.include_router(local_auth.local_auth_router)
 app.include_router(data.data_router)
+app.include_router(jobs.jobs_router)
 app.include_router(nlp.nlp_router)
 app.include_router(agent_routes.agent_router)
 app.include_router(dashboard.dashboard_router)

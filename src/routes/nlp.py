@@ -1,6 +1,7 @@
 import asyncio
 from fastapi import APIRouter, Depends, status, Request
 from helpers.auth_utils import get_current_user
+from helpers.config import get_settings
 from helpers.services import services_of
 from helpers.project_scope import scoped_project_dependency
 from fastapi.responses import JSONResponse
@@ -10,6 +11,8 @@ import logging
 from models import ResponseSignal
 from models.ProjectModel import ProjectModel
 from models.ChunkModel import ChunkModel
+from services.documents import index_project_chunks
+from services.jobs import INDEX_DOCUMENTS, submit_job
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -24,70 +27,19 @@ nlp_router = APIRouter(
 # INDEX DATA INTO VECTOR DB
 # -----------------------------
 @nlp_router.post("/index/push/{project_id}")
-async def index_project(request: Request, push_request: PushRequest, project_id: str = Depends(scoped_project_dependency)):
+async def index_project(request: Request, push_request: PushRequest,
+                        project_id: str = Depends(scoped_project_dependency),
+                        current_user: dict = Depends(get_current_user)):
+    services = services_of(request)
 
-    project_model = await ProjectModel.create_instance(
-        db_client=services_of(request).mongo_db
-    )
+    if push_request.background:
+        job, created = await submit_job(
+            services.mongo_db, get_settings(), INDEX_DOCUMENTS, str(current_user["_id"]), project_id,
+            {"do_reset": push_request.do_reset})
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"job": job, "already_queued": not created})
 
-    chunk_model = await ChunkModel.create_instance(
-        db_client=services_of(request).mongo_db
-    )
-
-    project = await project_model.get_project_or_create_one(
-        project_id=project_id
-    )
-
-    if not project:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "signal": ResponseSignal.PROJECT_NOT_FOUND_ERROR.value
-            }
-        )
-
-    nlp_controller = NLPController(
-        vectordb_client=services_of(request).vectordb_client,
-        generation_client=services_of(request).generation_client,
-        embedding_client=services_of(request).embedding_client,
-        template_parser=services_of(request).template_parser,
-    )
-
-    page_no = 1
-    inserted_items_count = 0
-
-    while True:
-        page_chunks = await chunk_model.get_poject_chunks(
-            project_id=project.id,
-            page_no=page_no
-        )
-
-        if not page_chunks:
-            break
-
-        is_inserted = await asyncio.to_thread(
-            nlp_controller.index_into_vector_db,
-            project=project,
-            chunks=page_chunks,
-            do_reset=push_request.do_reset if page_no == 1 else False
-        )
-
-        page_no += 1
-
-        if not is_inserted:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "signal": ResponseSignal.INSERT_INTO_VECTORDB_ERROR.value
-                }
-            )
-
-        inserted_items_count += len(page_chunks)
-
-    return {
-        "signal": ResponseSignal.INSERT_INTO_VECTORDB_SUCCESS.value,
-        "inserted_items_count": inserted_items_count
-    }
+    outcome = await index_project_chunks(services, project_id, push_request.do_reset)
+    return JSONResponse(status_code=outcome.status, content=outcome.body)
 
 
 # -----------------------------

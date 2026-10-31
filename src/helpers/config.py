@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "base"                    # speech-to-text model size (only with requirements-voice.txt)
     LOG_FORMAT: str = "text"                       # "text" (readable) or "json" (one object per line)
 
+    # Background jobs (document processing, indexing): a queue in MongoDB, worked by `JOB_WORKER_MODE`
+    JOB_WORKER_MODE: str = "embedded"              # "embedded" (inside the API process) or "external" (run worker.py)
+    JOB_CONCURRENCY: int = Field(default=2, ge=1, le=32)       # jobs one worker runs at the same time
+    JOB_POLL_SECONDS: float = Field(default=2.0, gt=0)         # how often an idle worker looks for work
+    JOB_LEASE_SECONDS: int = Field(default=120, ge=10)         # a job whose worker is silent this long is retried
+    JOB_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=10)
+    JOB_RETENTION_DAYS: int = Field(default=7, ge=1)           # finished jobs are deleted after this
+
     # Sign-in / sign-up throttling (counted in MongoDB, so it holds across workers)
     LOGIN_WINDOW_MINUTES: int = Field(default=15, ge=1)
     LOGIN_MAX_FAILURES_PER_ACCOUNT: int = Field(default=5, ge=1)   # per email + client address
@@ -263,6 +271,8 @@ class Settings(BaseSettings):
             found.append("COOKIE_SAMESITE=none only works with COOKIE_SECURE=true (browsers drop such cookies)")
         if self.FRONTEND_URL.startswith("https://") and not self.COOKIE_SECURE:
             found.append("FRONTEND_URL is https, so COOKIE_SECURE should be true (cookies would also travel over plain http)")
+        if self.JOB_WORKER_MODE not in ("embedded", "external"):
+            found.append("JOB_WORKER_MODE must be 'embedded' or 'external'")
         if bool(self.GOOGLE_SEARCH_API_KEY) != bool(self.GOOGLE_SEARCH_CX):
             found.append("GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX must be set together")
         if self.LOGIN_MAX_FAILURES_PER_IP < self.LOGIN_MAX_FAILURES_PER_ACCOUNT:

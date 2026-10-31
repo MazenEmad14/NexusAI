@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from helpers import clients
 from helpers.config import get_settings
 from helpers.services import Services, services_of
 
@@ -150,8 +151,8 @@ def _fake_factories(monkeypatch, recorder, generation_close_fails=False, vector_
         def create(self, provider):
             return FakeVectorDB()
 
-    monkeypatch.setattr(main, "LLMProviderFactory", FakeLLMFactory)
-    monkeypatch.setattr(main, "VectorDBProviderFactory", FakeVectorFactory)
+    monkeypatch.setattr(clients, "LLMProviderFactory", FakeLLMFactory)
+    monkeypatch.setattr(clients, "VectorDBProviderFactory", FakeVectorFactory)
 
 
 @needs_mongo
