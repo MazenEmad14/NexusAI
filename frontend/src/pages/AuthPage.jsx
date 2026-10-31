@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Mail, Lock, User, ArrowLeft, Eye, EyeOff } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { signIn, signUp, getGoogleAuthUrl } from "../services/api";
+import { getGoogleAuthUrl } from "../services/api";
+import { useAuth } from "../hooks/useAuth";
 
 const GoogleIcon = () => (
 // ... keep existing code ...
@@ -78,6 +79,12 @@ export default function AuthPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { status, signIn, signUp } = useAuth();
+
+  // Already signed in (a bookmarked /auth, or the back button): go straight to the workspace.
+  useEffect(() => {
+    if (status === "authenticated" && !loading) navigate("/workspace", { replace: true });
+  }, [status, loading, navigate]);
 
   const [signInData, setSignInData] = useState({ email: "", password: "" });
   const [signUpData, setSignUpData] = useState({
@@ -93,10 +100,8 @@ export default function AuthPage() {
     setLoading(true);
     try {
       const res = await signIn(signInData.email, signInData.password);
-      if (res && res.access_token) {
-        localStorage.setItem("jwt_token", res.access_token);
-        
-        if (res.user && !res.user.is_google_connected) {
+      if (res && res.user) {
+        if (!res.user.is_google_connected) {
            const googleRes = await getGoogleAuthUrl();
            if (googleRes && googleRes.auth_url) {
              window.location.href = googleRes.auth_url;
@@ -122,9 +127,7 @@ export default function AuthPage() {
     setLoading(true);
     try {
       const res = await signUp(signUpData.name, signUpData.email, signUpData.password);
-      if (res && res.access_token) {
-        localStorage.setItem("jwt_token", res.access_token);
-        
+      if (res && res.user) {
         const googleRes = await getGoogleAuthUrl();
         if (googleRes && googleRes.auth_url) {
           window.location.href = googleRes.auth_url;
