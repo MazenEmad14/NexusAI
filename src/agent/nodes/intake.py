@@ -4,6 +4,7 @@ import logging
 from agent.deps import AgentDeps
 from agent.errors import fail
 from helpers.exceptions import LLMUnavailable
+from helpers.privacy import redact_text
 from agent.history import append_chat_turn
 from agent.state import AgentState
 from controllers.classifier import ClassifierController
@@ -52,7 +53,7 @@ async def save_query_node(state: AgentState, deps: AgentDeps) -> AgentState:
             logger.error(f"Failed to fetch available files: {e}")
 
     state["metadata"]["start_time"] = time.time()
-    logger.info(f"Query saved: {state['query'][:50]}...")
+    logger.info(f"Query saved {redact_text(state['query'])}")
     
     # Append user message to contextual memory
     append_chat_turn(state, "user", state["query"])

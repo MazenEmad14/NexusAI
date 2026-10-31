@@ -17,10 +17,11 @@ from agent import AgentDeps, build_agent_graph
 from controllers.proactive_agent import evaluate_inbox_and_notify
 from helpers.config import get_settings, unknown_env_keys
 from helpers.error_handlers import install_error_handlers
+from helpers.logging_setup import RequestContextMiddleware, configure_logging
 from helpers.services import Services
 from models.UserModel import UserModel
 from models.indexes import ensure_all_indexes
-from routes import agent as agent_routes, auth, base, dashboard, data, local_auth, nlp
+from routes import agent as agent_routes, auth, base, dashboard, data, health, local_auth, nlp
 from services.notification_engine import NotificationEngine
 from stores.checkpoint.MongoCheckpointer import MongoCheckpointer
 from stores.llm.LLMProviderFactory import LLMProviderFactory
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
     startup does not leave a database connection, scheduler or storage lock behind.
     """
     settings = get_settings()
+    configure_logging(settings.LOG_FORMAT)
     settings.ensure_valid()  # refuse to start with a readable list of what is wrong, not fail on a later request
     for name in unknown_env_keys():
         logger.warning(f"{name} in the env file matches no setting and is ignored (a typo?)")
@@ -144,8 +146,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],  # lets the frontend show it when something fails
 )
+# Added after CORS so it is the outermost layer: every response, preflights included, carries a request id.
+app.add_middleware(RequestContextMiddleware)
 
+app.include_router(health.health_router)
 app.include_router(base.base_router)
 app.include_router(auth.auth_router)
 app.include_router(local_auth.local_auth_router)

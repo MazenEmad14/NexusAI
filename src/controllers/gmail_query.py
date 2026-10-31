@@ -89,5 +89,6 @@ async def build_gmail_query(generation_client, user_query: str, chat_history: li
     except Exception as exc:
         logger.warning(f"Failed to generate Gmail query: {exc}")
         return GmailSearchPlan()
-    logger.info(f"Gmail search plan: query={plan.query!r} max_results={plan.max_results}")
+    has_filter = bool(plan.query)  # whether, not what: the filter names senders and topics
+    logger.info(f"Gmail search plan: filter={'yes' if has_filter else 'none'} max_results={plan.max_results}")
     return plan

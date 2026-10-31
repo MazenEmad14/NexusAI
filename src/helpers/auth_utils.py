@@ -50,6 +50,7 @@ def decode_access_token(token: str):
 
 from fastapi import Request, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from helpers.logging_setup import user_id_var
 from models.UserModel import UserModel
 
 security = HTTPBearer()
@@ -71,5 +72,7 @@ async def get_current_user(request: Request, credentials: HTTPAuthorizationCrede
     if not user_data:
         logger.warning("get_current_user 401 - user for a valid token no longer exists")
         raise HTTPException(status_code=401, detail="User not found")
+
+    user_id_var.set(str(user_data["_id"]))  # on every log line written for the rest of this request
         
     return user_data

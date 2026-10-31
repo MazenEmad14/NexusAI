@@ -21,7 +21,7 @@ async def web_search_node(state: AgentState, deps: AgentDeps) -> AgentState:
     search_error = None
 
     if api_key and cx:
-        logger.info(f"Using Google Custom Search API for query: {query}")
+        logger.info("Web search through Google Custom Search")
         import httpx
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -42,7 +42,7 @@ async def web_search_node(state: AgentState, deps: AgentDeps) -> AgentState:
             logger.error(f"Google Custom Search API failed: {e}")
             search_error = e
     else:
-        logger.info(f"Using DDGS fallback for query: {query}")
+        logger.info("Web search through DuckDuckGo")
         try:
             def _do_ddg_search():
                 from ddgs import DDGS

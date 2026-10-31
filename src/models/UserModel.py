@@ -5,6 +5,7 @@ import logging
 from pymongo.errors import DuplicateKeyError
 
 from helpers.exceptions import EmailAlreadyRegistered
+from helpers.privacy import mask_email
 from helpers.token_crypto import encrypt_token, decrypt_token
 
 
@@ -104,7 +105,7 @@ class UserModel(BaseDataModel):
         async for doc in self.collection.find({"email": {"$regex": "[A-Z]"}}, {"email": 1}):
             lowered = _normalize(doc["email"])
             if await self.collection.find_one({"email": lowered}, {"_id": 1}):
-                logger.warning(f"Two accounts share the email {lowered} apart from letter case; left as is")
+                logger.warning(f"Two accounts share the email {mask_email(lowered)} apart from letter case; left as is")
                 continue
             await self.collection.update_one({"_id": doc["_id"]}, {"$set": {"email": lowered}})
             changed += 1

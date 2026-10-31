@@ -118,7 +118,7 @@ class NLPController(BaseController):
             for idx, doc in enumerate(retrieved_documents)
         ])
 
-        logger.info(f"Retrieved Chunks:\n{documents_prompts}")
+        logger.info(f"Retrieved {len(retrieved_documents)} chunks ({len(documents_prompts)} characters)")
 
         footer_prompt = self.template_parser.get("rag", "footer_prompt", {
             "context": documents_prompts,
@@ -140,7 +140,7 @@ class NLPController(BaseController):
 
         full_prompt = footer_prompt
 
-        logger.info(f"\n========== FINAL LLM PROMPT ==========\n{full_prompt}\n======================================\n")
+        logger.info(f"RAG prompt built ({len(full_prompt)} characters, {len(chat_history)} history messages)")
 
         # step4: Retrieve the Answer
         answer = self.generation_client.generate_text(

@@ -9,6 +9,7 @@ import time
 from helpers.auth_utils import get_current_user
 from helpers.services import services_of
 from helpers.config import get_settings
+from helpers.privacy import mask_email
 from models.UserModel import UserModel
 
 logger = logging.getLogger("uvicorn.error")
@@ -96,9 +97,9 @@ async def google_callback(request: Request, code: str, state: str):
     user_model = await UserModel.create_instance(services_of(request).mongo_db)
     saved = await user_model.update_google_token(pending["user_email"], token_dict)
     if not saved:
-        logger.error(f"Failed to save Google token for {pending['user_email']}")
+        logger.error(f"Failed to save Google token for {mask_email(pending['user_email'])}")
         raise HTTPException(status_code=500, detail="Failed to save Google token")
-    logger.info(f"Saved per-user Google token for {pending['user_email']}")
+    logger.info(f"Saved per-user Google token for {mask_email(pending['user_email'])}")
 
     frontend = pending["origin"] or get_settings().FRONTEND_URL
     return RedirectResponse(url=f"{frontend}/workspace")
