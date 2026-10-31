@@ -12,7 +12,7 @@ from controllers.formatter import ResponseFormatter
 from helpers.exceptions import GoogleAuthRequiredException
 from helpers.project_scope import scoped_project_id
 from services.retrieval import KBAnswer
-from services.retrieval import KB_ANSWER_PROMPT
+from helpers.prompts import render
 from services.retrieval import choose_sources
 from services.retrieval import detect_priority
 from services.retrieval import rerank_results
@@ -179,7 +179,7 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
         try:
             answer = await llm_json(
                 generation_client,
-                KB_ANSWER_PROMPT.format(context=context_text, question=state["query"]),
+                render("agent", "kb_answer", context=context_text, question=state["query"]),
                 KBAnswer,
                 chat_history=state.get("chat_history", []),
                 max_output_tokens=400,

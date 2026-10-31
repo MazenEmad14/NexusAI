@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from helpers.exceptions import LLMOutputError, LLMUnavailable
 from helpers.llm_json import llm_json, parse_llm_json
+from helpers.prompts import render
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -13,25 +14,6 @@ DEFAULT_MAX_RESULTS = 5
 MAX_RESULTS_LIMIT = 20
 MAX_QUERY_LENGTH = 200
 
-PROMPT = """Convert the user's request into a Gmail search and a result limit.
-Return ONLY a valid JSON object with EXACTLY two keys: "query" (string) and "max_results" (integer). No markdown, no explanation.
-
-Rules for "query":
-- If the user asks for the latest emails with no specific filter (e.g. "last 5 mails", "اخر 3 رسايل"), use an empty string "".
-- Use newer_than / older_than ONLY for a real time range (e.g. "yesterday" -> newer_than:2d older_than:1d). Never use them to fake a result count.
-- If unsure, use "".
-
-Rules for "max_results":
-- The exact number of emails requested (e.g. "last 3 mails" -> 3). If no number is requested, use 5.
-
-Examples:
-- "emails from ahmed" -> {{"query": "from:ahmed", "max_results": 5}}
-- "what is my last 3 mails" -> {{"query": "", "max_results": 3}}
-- "اخر 10 ايميلات امبارح" -> {{"query": "newer_than:2d older_than:1d", "max_results": 10}}
-- "رسايل فيها مرفقات من جوجل" -> {{"query": "has:attachment from:google", "max_results": 5}}
-
-User request: "{user_query}"
-"""
 
 
 class GmailSearchPlan(BaseModel):
@@ -74,7 +56,7 @@ async def build_gmail_query(generation_client, user_query: str, chat_history: li
     try:
         plan = await llm_json(
             generation_client,
-            PROMPT.format(user_query=user_query.replace('"', "'")),
+            render("email", "gmail_search", user_query=user_query.replace('"', "'")),
             GmailSearchPlan,
             chat_history=chat_history or [],
             max_output_tokens=150,
