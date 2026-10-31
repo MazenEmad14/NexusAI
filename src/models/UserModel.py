@@ -46,6 +46,15 @@ class UserModel(BaseDataModel):
         look like an unknown account (which signs people out and lets a sign-up through)."""
         return await self.collection.find_one({"email": _normalize(email)})
 
+    async def get_user_by_id(self, user_id: str) -> Optional[dict]:
+        from bson import ObjectId
+        from bson.errors import InvalidId
+
+        try:
+            return await self.collection.find_one({"_id": ObjectId(user_id)})
+        except InvalidId:
+            return None
+
     async def update_google_auth_status(self, email: str, status: bool) -> bool:
         result = await self.collection.update_one(
             {"email": _normalize(email)},

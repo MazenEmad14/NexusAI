@@ -2,16 +2,21 @@ import asyncio
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 from pymongo.errors import PyMongoError
 
 from helpers import auth_utils
-from helpers.services import services_of
 from helpers.config import get_settings
+from helpers.services import services_of
+from helpers.session_cookies import (
+    CSRF_COOKIE, REFRESH_COOKIE, clear_auth_cookies, new_csrf_token, set_auth_cookies,
+)
 from helpers.timezones import is_valid_timezone
 from helpers.validation import password_problem
 from models.RateLimitModel import RateLimitModel
+from models.SessionModel import SessionModel
 from models.UserModel import UserModel
 from models.db_schemes.user import User
 
@@ -64,8 +69,18 @@ async def _guard_signup(limits: RateLimitModel, request: Request) -> None:
         raise _too_many(ends, "sign-up")
 
 
+async def _start_session(response: Response, db, user_id: str, email: str) -> tuple[str, str]:
+    """Issue the session cookies for a user who has just proved who they are; returns (access token, csrf token)."""
+    settings = get_settings()
+    refresh = await (await SessionModel.create_instance(db)).start(user_id, settings.REFRESH_TOKEN_DAYS)
+    csrf = new_csrf_token()
+    access = auth_utils.create_access_token({"sub": email})
+    set_auth_cookies(response, access, refresh, csrf)
+    return access, csrf
+
+
 @local_auth_router.post("/signup")
-async def signup(request: Request, body: SignUpRequest):
+async def signup(request: Request, response: Response, body: SignUpRequest):
     limits = await RateLimitModel.create_instance(services_of(request).mongo_db)
     await _guard_signup(limits, request)
 
@@ -94,11 +109,13 @@ async def signup(request: Request, body: SignUpRequest):
     # Raises EmailAlreadyRegistered (409), also when two sign-ups with the same email race.
     await user_model.create_user(new_user)
 
-    token = auth_utils.create_access_token({"sub": email})
+    created = await user_model.get_user_by_email(email)
+    token, csrf = await _start_session(response, services_of(request).mongo_db, str(created["_id"]), email)
 
     return {
-        "access_token": token,
+        "access_token": token,  # for API clients; browsers use the httpOnly cookies set above
         "token_type": "bearer",
+        "csrf_token": csrf,
         "user": {
             "name": name,
             "email": email,
@@ -108,7 +125,7 @@ async def signup(request: Request, body: SignUpRequest):
 
 
 @local_auth_router.post("/signin")
-async def signin(request: Request, body: SignInRequest):
+async def signin(request: Request, response: Response, body: SignInRequest):
     settings = get_settings()
     window = settings.LOGIN_WINDOW_MINUTES * 60
     email = auth_utils.normalize_email(str(body.email))
@@ -149,16 +166,92 @@ async def signin(request: Request, body: SignInRequest):
         except PyMongoError:
             logger.warning("Could not sync the Google connection flag at sign-in", exc_info=True)  # cosmetic
 
-    token = auth_utils.create_access_token({"sub": email})
+    token, csrf = await _start_session(response, services_of(request).mongo_db, str(user_data["_id"]), email)
 
     return {
-        "access_token": token,
+        "access_token": token,  # for API clients; browsers use the httpOnly cookies set above
         "token_type": "bearer",
-        "user": {
-            "name": user_data.get("name"),
-            "email": email,
-            "is_google_connected": is_google_connected
-        }
+        "csrf_token": csrf,
+        "user": _public_user(user_data, email, is_google_connected),
+    }
+
+
+def _public_user(user_data: dict, email: str, is_google_connected: bool) -> dict:
+    return {
+        "name": user_data.get("name"),
+        "email": email,
+        "is_google_connected": is_google_connected,
+        "timezone": user_data.get("timezone"),
+    }
+
+
+@local_auth_router.post("/refresh")
+async def refresh(request: Request, response: Response):
+    """Swap the refresh cookie for a new access cookie (and the next refresh token).
+
+    The browser's code calls this when an API call answers 401; it cannot read the cookies itself.
+    """
+    settings = get_settings()
+    db = services_of(request).mongo_db
+
+    limits = await RateLimitModel.create_instance(db)
+    ip_key = f"refresh:{_client_ip(request)}"
+    if await limits.hit(ip_key, window_seconds=60) > settings.REFRESH_MAX_PER_IP_PER_MINUTE:
+        _, ends = await limits.status(ip_key)
+        raise _too_many(ends, "session refresh")
+
+    origin = request.headers.get("origin")
+    if origin and origin not in settings.CORS_ORIGINS and origin != str(request.base_url).rstrip("/"):
+        raise HTTPException(status_code=403, detail="Origin not allowed")
+
+    rotated = await (await SessionModel.create_instance(db)).rotate(
+        request.cookies.get(REFRESH_COOKIE, ""), settings.REFRESH_TOKEN_DAYS)
+    if rotated is None:
+        return _session_expired()
+    user_id, new_refresh = rotated
+
+    user_data = await (await UserModel.create_instance(db)).get_user_by_id(user_id)
+    if user_data is None:  # the account was deleted: the session ends with it
+        await (await SessionModel.create_instance(db)).revoke_all_for_user(user_id)
+        return _session_expired()
+
+    email = user_data["email"]
+    csrf = new_csrf_token()
+    access = auth_utils.create_access_token({"sub": email})
+    set_auth_cookies(response, access, new_refresh, csrf)
+    return {
+        "access_token": access,
+        "token_type": "bearer",
+        "csrf_token": csrf,
+        "user": _public_user(user_data, email, bool(user_data.get("google_token"))),
+    }
+
+
+def _session_expired() -> JSONResponse:
+    """401 that also deletes the session cookies (an exception cannot carry several Set-Cookie headers)."""
+    expired = JSONResponse(
+        status_code=401, content={"detail": "Session expired. Please sign in again.", "code": "session_expired"})
+    clear_auth_cookies(expired)
+    return expired
+
+
+@local_auth_router.post("/signout")
+async def signout(request: Request, response: Response):
+    """End the session: the refresh token stops working everywhere and the cookies are cleared."""
+    raw = request.cookies.get(REFRESH_COOKIE, "")
+    if raw:
+        await (await SessionModel.create_instance(services_of(request).mongo_db)).revoke_by_token(raw)
+    clear_auth_cookies(response)
+    return {"signed_out": True}
+
+
+@local_auth_router.get("/me")
+async def me(request: Request, current_user: dict = Depends(auth_utils.get_current_user)):
+    """Who is signed in. Also how the page learns, after a reload, whether it has a session and its csrf token."""
+    email = current_user["email"]
+    return {
+        "user": _public_user(current_user, email, bool(current_user.get("google_token"))),
+        "csrf_token": request.cookies.get(CSRF_COOKIE),
     }
 
 

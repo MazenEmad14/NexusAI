@@ -81,6 +81,13 @@ class Settings(BaseSettings):
 
     # ── security ─────────────────────────────────────────────────────────────
     JWT_SECRET_KEY: str
+    # Sessions: a short-lived access token plus a longer-lived refresh token, both in httpOnly cookies.
+    ACCESS_TOKEN_MINUTES: int = Field(default=15, ge=1)
+    REFRESH_TOKEN_DAYS: int = Field(default=14, ge=1)
+    COOKIE_SECURE: bool = False                    # true when the site is served over HTTPS
+    COOKIE_SAMESITE: str = "lax"                   # lax | strict | none (none needs COOKIE_SECURE)
+    COOKIE_DOMAIN: Optional[str] = None            # only for a frontend and API on sibling sub-domains
+    REFRESH_MAX_PER_IP_PER_MINUTE: int = Field(default=30, ge=1)
     TOKEN_ENCRYPTION_KEY: Optional[str] = None     # encrypts stored Google tokens when set
 
     # ── web, Google and CORS ─────────────────────────────────────────────────
@@ -112,7 +119,7 @@ class Settings(BaseSettings):
     @field_validator(
         "GENERATION_MODEL_ID", "EMBEDDING_MODEL_ID", "EMBEDDING_MODEL_SIZE", "OPENAI_API_KEY", "OPENAI_API_URL",
         "COHERE_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "TOKEN_ENCRYPTION_KEY", "GOOGLE_SEARCH_API_KEY",
-        "GOOGLE_SEARCH_CX", mode="before",
+        "GOOGLE_SEARCH_CX", "COOKIE_DOMAIN", mode="before",
     )
     @classmethod
     def blank_means_unset(cls, value):
@@ -165,6 +172,14 @@ class Settings(BaseSettings):
         value = value.strip().lower() if isinstance(value, str) else value
         if value not in DISTANCE_METHODS:
             raise ValueError(f"must be one of {', '.join(DISTANCE_METHODS)}")
+        return value
+
+    @field_validator("COOKIE_SAMESITE", mode="before")
+    @classmethod
+    def known_samesite(cls, value):
+        value = value.strip().lower() if isinstance(value, str) else value
+        if value not in ("lax", "strict", "none"):
+            raise ValueError("must be lax, strict or none")
         return value
 
     @field_validator("LOG_FORMAT", mode="before")
@@ -249,6 +264,10 @@ class Settings(BaseSettings):
             except Exception:
                 found.append("TOKEN_ENCRYPTION_KEY is not a valid Fernet key (generate one with Fernet.generate_key())")
 
+        if self.COOKIE_SAMESITE == "none" and not self.COOKIE_SECURE:
+            found.append("COOKIE_SAMESITE=none only works with COOKIE_SECURE=true (browsers drop such cookies)")
+        if self.FRONTEND_URL.startswith("https://") and not self.COOKIE_SECURE:
+            found.append("FRONTEND_URL is https, so COOKIE_SECURE should be true (cookies would also travel over plain http)")
         if bool(self.GOOGLE_SEARCH_API_KEY) != bool(self.GOOGLE_SEARCH_CX):
             found.append("GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX must be set together")
         if self.LOGIN_MAX_FAILURES_PER_IP < self.LOGIN_MAX_FAILURES_PER_ACCOUNT:

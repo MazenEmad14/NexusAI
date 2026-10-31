@@ -158,6 +158,18 @@ npm run dev
 
 The frontend will be available at `http://localhost:5173`.
 
+**Sign-in session.** The browser never holds the login token in a place scripts can read. Signing in sets an
+httpOnly `access_token` cookie (15 minutes) and a single-use, rotating `refresh_token` cookie (30 days, sent only to
+`/api/v1/auth/local/*`); the page renews the session silently when an API call answers 401. Requests that change
+something also send an `X-CSRF-Token` header. Bearer tokens still work for API clients.
+
+- `VITE_API_BASE` (frontend/.env) sets the backend URL; unset, a development build uses `http://localhost:5000`
+  and a production build uses the page's own origin.
+- Frontend and backend on different sites (different registrable domains): set `COOKIE_SAMESITE=none` and
+  `COOKIE_SECURE=true` (HTTPS) in `src/.env`, and list the page's origin in `CORS_ORIGINS`. Behind HTTPS in
+  general set `COOKIE_SECURE=true`.
+- `cd frontend && npm test` runs the API client's unit tests.
+
 ## Core Workflows
 
 ### AI Agent Chat

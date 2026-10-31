@@ -1,119 +1,29 @@
 /**
- * NexusAI — Production API Service Layer
+ * NexusAI — API service layer
  *
- * Handles all communication with the FastAPI backend.
- * Features: retry logic, abort controllers, error normalization.
+ * One function per backend call. HTTP, retries, the cookie session and error handling live in apiClient.js.
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5000';
+import { ApiError, createApiClient, resolveApiBase } from './apiClient';
 
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 800;
+export { ApiError };
 
-/* ──────────────────── helpers ──────────────────── */
+const API_BASE = resolveApiBase(import.meta.env);
 
-class ApiError extends Error {
-  constructor(message, status, data = null) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.data = data;
-  }
+const sessionExpiredListeners = new Set();
+
+/** Be told when the session cannot be renewed (the user must sign in again). Returns an unsubscribe function. */
+export function onSessionExpired(listener) {
+  sessionExpiredListeners.add(listener);
+  return () => sessionExpiredListeners.delete(listener);
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+const client = createApiClient({
+  baseUrl: API_BASE,
+  onSessionExpired: () => sessionExpiredListeners.forEach(listener => listener()),
+});
 
-/**
- * Core request function with retry + abort support.
- * @param {string} endpoint
- * @param {RequestInit & { retries?: number, signal?: AbortSignal }} options
- * @returns {Promise<any>}
- */
-async function request(endpoint, options = {}) {
-  const url = `${API_BASE}${endpoint}`;
-  const retries = options.retries ?? MAX_RETRIES;
-
-  const headers = { ...options.headers };
-  const token = localStorage.getItem("jwt_token");
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  // Don't set Content-Type for FormData (browser sets boundary automatically)
-  if (!(options.body instanceof FormData)) {
-    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
-  }
-
-  const config = {
-    ...options,
-    headers,
-  };
-
-  let lastError = null;
-
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(url, config);
-
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({ error: res.statusText }));
-        // FastAPI validation errors put a list of {msg} objects in `detail`.
-        const detail = Array.isArray(errBody.detail)
-          ? errBody.detail.map(d => d.msg).filter(Boolean).join('; ')
-          : errBody.detail;
-        const msg = errBody.error || errBody.message || detail || `HTTP ${res.status}`;
-
-        // Don't retry 4xx client errors (except 429)
-        if (res.status >= 400 && res.status < 500 && res.status !== 429) {
-          // A 401 from the sign-in / sign-up call means "wrong credentials", not "session expired":
-          // redirecting would reload the page and wipe the error message the user needs to see.
-          if (res.status === 401 && !endpoint.startsWith('/api/v1/auth/local/')) {
-            localStorage.removeItem("jwt_token");
-            window.location.href = '/auth';
-          }
-          throw new ApiError(msg, res.status, errBody);
-        }
-
-        // For 5xx: set lastError and continue retry loop
-        lastError = new ApiError(msg, res.status, errBody);
-        if (attempt < retries) {
-          await sleep(RETRY_DELAY_MS * Math.pow(2, attempt));
-        }
-        continue;
-      }
-
-      const contentType = res.headers.get('content-type') || '';
-      if (options.responseType === 'blob') {
-        return await res.blob();
-      }
-      if (contentType.includes('application/json')) {
-        return await res.json();
-      }
-      return { data: await res.text() };
-    } catch (err) {
-      // Don't retry aborted requests
-      if (err.name === 'AbortError') {
-        throw err;
-      }
-
-      lastError = err;
-
-      // Don't retry client errors (they won't succeed on retry)
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429) {
-        throw err;
-      }
-
-      // Retry with exponential backoff
-      if (attempt < retries) {
-        await sleep(RETRY_DELAY_MS * Math.pow(2, attempt));
-      }
-    }
-  }
-
-  throw lastError || new ApiError('Request failed after retries', 0);
-}
+const request = client.request;
 
 /* ──────────────────── Agent Chat ──────────────────── */
 
@@ -150,19 +60,8 @@ export async function sendChatMessage(query, projectId = 'default', threadId = '
  * @param {string|null} filePath
  */
 export async function streamChatMessage(query, projectId = 'default', threadId = 'default_thread', onChunk, onAction, onMetadata, signal, filePath = null) {
-  const url = `${API_BASE}/api/v1/agent/chat/stream`;
-  
-  const headers = {
-    'Content-Type': 'application/json',
-  };
-  const token = localStorage.getItem("jwt_token");
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  const response = await fetch(url, {
+  const response = await client.stream('/api/v1/agent/chat/stream', {
     method: 'POST',
-    headers,
     body: JSON.stringify({
       query,
       project_id: projectId,
@@ -171,15 +70,6 @@ export async function streamChatMessage(query, projectId = 'default', threadId =
     }),
     signal,
   });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      localStorage.removeItem("jwt_token");
-      window.location.href = '/auth';
-    }
-    const errBody = await response.json().catch(() => ({ error: response.statusText }));
-    throw new ApiError(errBody.error || `HTTP ${response.status}`, response.status, errBody);
-  }
 
   if (!response.body) {
     throw new Error('Response body is null — streaming not supported in this environment');
@@ -458,18 +348,37 @@ export async function syncTimezone() {
   }
 }
 
+/** The signed-in user from the session cookies, or null. Call once when the app starts. */
+export function loadSession() {
+  return client.loadSession();
+}
+
 export async function signIn(email, password) {
-  return request('/api/v1/auth/local/signin', {
+  const result = await request('/api/v1/auth/local/signin', {
     method: 'POST',
-    body: JSON.stringify({ email, password })
+    body: JSON.stringify({ email, password }),
+    retries: 0,
   });
+  client.setCsrfToken(result.csrf_token);
+  return result;
 }
 
 export async function signUp(name, email, password) {
-  return request('/api/v1/auth/local/signup', {
+  const result = await request('/api/v1/auth/local/signup', {
     method: 'POST',
-    body: JSON.stringify({ name, email, password })
+    body: JSON.stringify({ name, email, password }),
+    retries: 0,
   });
+  client.setCsrfToken(result.csrf_token);
+  return result;
+}
+
+export async function signOut() {
+  try {
+    await request('/api/v1/auth/local/signout', { method: 'POST', retries: 0 });
+  } finally {
+    client.clearSession(); // even if the request failed, this browser forgets the session
+  }
 }
 
 /* ──────────────────── Health Check ──────────────────── */
