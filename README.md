@@ -178,6 +178,20 @@ Interact with NexusAI via the `/api/v1/agent/` endpoints or directly from the fr
 ### RAG (Knowledge Base)
 You can upload files (`text/plain` or `application/pdf`) to a specific `project_id`. The system chunks the text, computes embeddings using the configured LLM, and stores them in Qdrant for the agent to query during conversations.
 
+### Background jobs
+
+Reading a large PDF or embedding thousands of chunks can take minutes. Send `"background": true` in the body of
+`POST /api/v1/data/process/{project}` or `POST /api/v1/nlp/index/push/{project}` and the API answers `202` with a
+job instead of waiting; follow it with `GET /api/v1/jobs/{job_id}` (status `queued`, `running`, `succeeded` or
+`failed`, plus progress, result and a readable error) or list yours with `GET /api/v1/jobs`. Without the flag
+both routes work exactly as before.
+
+The queue lives in MongoDB (collection `jobs`), so there is nothing extra to install. A worker claims jobs with an
+atomic update and renews a lease while it works; a job whose worker dies is retried by another, up to
+`JOB_MAX_ATTEMPTS`, with a growing delay. Asking twice for the same project returns the job already waiting.
+By default the API process runs the worker (`JOB_WORKER_MODE=embedded`). To keep heavy work out of the web
+server, set `JOB_WORKER_MODE=external` for the API and run `python worker.py` from `src/` (as many as you need).
+
 ### Proactive Secretary
 Once authenticated with Google, NexusAI runs a background scheduler (every 1 minute) to evaluate your latest unread emails. It categorizes them and sends proactive notifications to the frontend if immediate action or awareness is required.
 

@@ -12,10 +12,11 @@ from helpers.auth_utils import get_current_user
 from helpers.file_types import SNIFF_BYTES, is_indexable
 from helpers.project_scope import scoped_project_dependency
 from .schemes.data import ProcessRequest
-from models.ProjectModel import ProjectModel
-from models.ChunkModel import ChunkModel
 from models.AssetModel import AssetModel
-from models.db_schemes import DataChunk, Asset
+from models.db_schemes import Asset
+from models.ProjectModel import ProjectModel
+from services.documents import Outcome, process_project_files, resolve_files
+from services.jobs import PROCESS_DOCUMENTS, submit_job
 from models.enums.AssetTypeEnum import AssetTypeEnum
 
 logger = logging.getLogger('uvicorn.error')
@@ -138,151 +139,24 @@ async def upload_data(request: Request, file: UploadFile,
         )
 
 @data_router.post("/process/{project_id}")
-async def process_endpoint(request: Request, process_request: ProcessRequest, project_id: str = Depends(scoped_project_dependency)):
+async def process_endpoint(request: Request, process_request: ProcessRequest,
+                           project_id: str = Depends(scoped_project_dependency),
+                           current_user: dict = Depends(get_current_user)):
+    services = services_of(request)
+    settings = get_settings()
 
-    chunk_size = process_request.chunk_size
-    overlap_size = process_request.overlap_size
-    do_reset = process_request.do_reset
+    if process_request.background:
+        # Check the request now, so a wrong file name is an immediate 400 and not a job that fails later.
+        resolved = await resolve_files(services.mongo_db, project_id, process_request.file_id)
+        if isinstance(resolved, Outcome):
+            return JSONResponse(status_code=resolved.status, content=resolved.body)
+        job, created = await submit_job(
+            services.mongo_db, settings, PROCESS_DOCUMENTS, str(current_user["_id"]), project_id,
+            {"file_id": process_request.file_id, "chunk_size": process_request.chunk_size,
+             "overlap_size": process_request.overlap_size, "do_reset": process_request.do_reset})
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"job": job, "already_queued": not created})
 
-    project_model = await ProjectModel.create_instance(
-        db_client=services_of(request).mongo_db
-    )
-
-    project = await project_model.get_project_or_create_one(
-        project_id=project_id
-    )
-
-    asset_model = await AssetModel.create_instance(
-            db_client=services_of(request).mongo_db
-        )
-
-    project_files_ids = {}
-    if process_request.file_id:
-        asset_record = await asset_model.get_asset_record_by_id(
-            asset_project_id=project.id,
-            asset_id=process_request.file_id
-        )
-
-        if asset_record is None:
-            asset_record = await asset_model.get_asset_record(
-                asset_project_id=project.id,
-                asset_name=process_request.file_id
-            )
-
-        if asset_record is None:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "signal": ResponseSignal.FILE_ID_ERROR.value,
-                }
-            )
-
-        project_files_ids = {
-            asset_record.id: asset_record.asset_name
-        }
-    
-    else:
-        
-
-        project_files = await asset_model.get_all_project_assets(
-            asset_project_id=project.id,
-            asset_type=AssetTypeEnum.FILE.value,
-        )
-
-        project_files_ids = {
-            record.id: record.asset_name
-            for record in project_files
-        }
-
-    if len(project_files_ids) == 0:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "signal": ResponseSignal.NO_FILES_ERROR.value,
-            }
-        )
-    
-    process_controller = ProcessController(project_id=project_id)
-
-    chunk_model = await ChunkModel.create_instance(
-                        db_client=services_of(request).mongo_db
-                    )
-
-    if do_reset:
-        _ = await chunk_model.delete_chunks_by_project_id(
-            project_id=project.id
-        )
-
-    results = []
-    no_records = 0
-    no_files = 0
-
-    for asset_id, file_id in project_files_ids.items():
-        result = {"file": file_id}
-        results.append(result)
-
-        if not is_indexable(file_id):
-            # Spreadsheets are for data analysis, not for the knowledge base: not an error.
-            result.update(status="skipped", reason="not_indexable")
-            continue
-
-        try:
-            # Parsing and splitting are CPU/disk bound: keep them off the event loop.
-            file_content = await asyncio.to_thread(process_controller.get_file_content, file_id)
-            if file_content is None:
-                result.update(status="failed", reason="unreadable")
-                continue
-            file_chunks = await asyncio.to_thread(
-                process_controller.process_file_content,
-                file_content=file_content,
-                file_id=file_id,
-                chunk_size=chunk_size,
-                overlap_size=overlap_size,
-            )
-        except Exception:
-            logger.error(f"Error while processing file: {file_id}", exc_info=True)
-            result.update(status="failed", reason="unreadable")
-            continue
-
-        if not file_chunks:
-            # For example a scanned PDF with no text layer.
-            result.update(status="failed", reason="no_text")
-            continue
-
-        file_chunks_records = [
-            DataChunk(
-                chunk_text=chunk.page_content,
-                chunk_metadata=chunk.metadata,
-                chunk_order=i+1,
-                chunk_project_id=project.id,
-                chunk_asset_id=asset_id
-            )
-            for i, chunk in enumerate(file_chunks)
-        ]
-
-        # Processing a file again replaces its chunks instead of duplicating them.
-        await chunk_model.delete_chunks_by_asset_id(project_id=project.id, asset_id=asset_id)
-        inserted = await chunk_model.insert_many_chunks(chunks=file_chunks_records)
-
-        result.update(status="processed", chunks=inserted)
-        no_records += inserted
-        no_files += 1
-
-    # One bad file no longer rolls back or hides the others; only "nothing worked" is an error.
-    if no_files == 0 and any(r["status"] == "failed" for r in results):
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "signal": ResponseSignal.PROCESSING_FAILED.value,
-                "results": results,
-            }
-        )
-
-    return JSONResponse(
-        content={
-            "signal": ResponseSignal.PROCESSING_SUCCESS.value,
-            "inserted_chunks": no_records,
-            "processed_files": no_files,
-            "results": results,
-        }
-    )
+    outcome = await process_project_files(
+        services.mongo_db, project_id, process_request.file_id, process_request.chunk_size,
+        process_request.overlap_size, process_request.do_reset)
+    return JSONResponse(status_code=outcome.status, content=outcome.body)
