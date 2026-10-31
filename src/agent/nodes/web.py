@@ -2,6 +2,8 @@ import os
 import logging
 import asyncio
 from agent.deps import AgentDeps
+from agent.errors import fail
+from helpers.exceptions import ExternalServiceError
 from agent.state import AgentState
 
 logger = logging.getLogger('uvicorn.error')
@@ -15,7 +17,8 @@ async def web_search_node(state: AgentState, deps: AgentDeps) -> AgentState:
     cx = os.getenv("GOOGLE_SEARCH_CX")
     
     results = []
-    
+    search_error = None
+
     if api_key and cx:
         logger.info(f"Using Google Custom Search API for query: {query}")
         import httpx
@@ -36,6 +39,7 @@ async def web_search_node(state: AgentState, deps: AgentDeps) -> AgentState:
                     })
         except Exception as e:
             logger.error(f"Google Custom Search API failed: {e}")
+            search_error = e
     else:
         logger.info(f"Using DDGS fallback for query: {query}")
         try:
@@ -51,7 +55,12 @@ async def web_search_node(state: AgentState, deps: AgentDeps) -> AgentState:
             logger.warning(f"DDGS import failed: {e}")
         except Exception as exc:
             logger.error(f"DDGS web search failed: {exc}")
+            search_error = exc
             
+    if not results and search_error is not None:
+        # The search itself failed (not "no hits"): say so instead of letting the model claim nothing exists.
+        return fail(state, ExternalServiceError(f"Web search failed: {search_error}", service="Web search"))
+
     if not results:
         logger.warning("No web search results found. Proceeding with empty context for conversational fallback.")
         snippets_text = "No web search results found. If the user is just saying hello or asking a general conversational question, respond naturally. Otherwise, say you couldn't find the information."

@@ -13,6 +13,9 @@ def route_request_type(state: AgentState) -> str:
 
     logger.info(f"[Router] request_type='{req}' action_type='{act}'")
 
+    if req == "error":  # classification failed and the reply is already written
+        return "format_output"
+
     if req == "conversational":
         logger.info("[Router] → conversational_node")
         return "conversational_node"
@@ -42,6 +45,8 @@ def route_request_type(state: AgentState) -> str:
 
 def route_action_type(state: AgentState) -> str:
     """Route to the correct action handler."""
+    if state.get("status") == "error":  # details could not be extracted; the reply is already written
+        return "format_output"
     action_type = state.get("action_type", "")
     if action_type == "send_email":
         return "send_email"

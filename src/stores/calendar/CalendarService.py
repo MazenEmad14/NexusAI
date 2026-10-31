@@ -8,7 +8,8 @@ from typing import List, Dict, Optional, Any
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from helpers.exceptions import GoogleAuthRequiredException
+from helpers.exceptions import GoogleAuthRequiredException, ValidationFailed
+from stores.google_errors import translate_google_error
 from helpers.timezones import local_now, resolve_timezone
 from helpers.validation import parse_recipients
 import httplib2
@@ -139,11 +140,13 @@ class CalendarService:
             time_zone: IANA zone the date and time are in (the user's zone; default if not given)
             
         Returns:
-            Dict with event details or None on error
+            Dict with the event details
+
+        Raises ValidationFailed for an unusable date or time, GoogleAuthRequiredException if Google
+        rejects the token, and ExternalServiceError for any other Calendar failure.
         """
         if not self.service:
-            logger.error("Calendar service not authenticated")
-            return None
+            raise GoogleAuthRequiredException("No Google account connected.")
 
         try:
             # Provide fallbacks if LLM fails to extract date or time
@@ -191,12 +194,12 @@ class CalendarService:
                 "status": "created"
             }
 
-        except ValueError as e:
-            logger.error(f"Invalid date/time format: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Error creating calendar event: {e}")
-            return None
+        except ValueError as exc:
+            logger.error(f"Invalid date/time format: {exc}")
+            raise ValidationFailed("I couldn't understand that date or time. Please give it as, for example, 2026-12-01 at 14:00.") from exc
+        except Exception as exc:
+            logger.error(f"Error creating calendar event: {exc}")
+            raise translate_google_error(exc, "Google Calendar") from exc
 
     def list_events(self, max_results: int = 10,
                     days_ahead: int = 7) -> List[Dict]:
@@ -208,15 +211,18 @@ class CalendarService:
             return []
 
         now_utc = datetime.now(timezone.utc)
-        with self.lock:
-            events_result = self.service.events().list(
-                calendarId='primary',
-                timeMin=now_utc.isoformat(),
-                timeMax=(now_utc + timedelta(days=days_ahead)).isoformat(),
-                maxResults=max_results,
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
+        try:
+            with self.lock:
+                events_result = self.service.events().list(
+                    calendarId='primary',
+                    timeMin=now_utc.isoformat(),
+                    timeMax=(now_utc + timedelta(days=days_ahead)).isoformat(),
+                    maxResults=max_results,
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
+        except Exception as exc:
+            raise translate_google_error(exc, "Google Calendar") from exc
 
         return [
             {

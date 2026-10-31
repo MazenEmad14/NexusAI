@@ -19,6 +19,7 @@ from helpers.services import services_of
 from helpers.event_bus import get_user_queue, issue_ticket, redeem_ticket
 from helpers.auth_utils import get_current_user
 from models.UserModel import UserModel
+from helpers.error_handlers import public_message_for
 from helpers.google_context import set_google_token
 from pymongo.errors import PyMongoError
 
@@ -125,15 +126,13 @@ async def _build_initial_state(request: Request, chat_request: ChatRequest, curr
 async def _bind_google_token(request: Request, current_user: dict):
     """Load this user's Google token and bind it to the request context for the graph nodes.
 
-    Returns (holder, original_token); the holder carries any token the nodes refreshed.
+    Returns (holder, original_token); the holder carries any token the nodes refreshed. A database
+    failure propagates (503) instead of looking like "no Google account connected".
     """
     token = None
     if current_user.get("email"):
-        try:
-            user_model = await UserModel.create_instance(services_of(request).mongo_db)
-            token = await user_model.get_google_token(current_user["email"])
-        except Exception as exc:
-            logger.warning(f"Could not load per-user Google token: {exc}")
+        user_model = await UserModel.create_instance(services_of(request).mongo_db)
+        token = await user_model.get_google_token(current_user["email"])
     return set_google_token(token), token
 
 
@@ -232,15 +231,6 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
             type="error",
             status="invalid_thread",
             thread_id=chat_request.thread_id
-        )
-    except Exception as e:
-        logger.error(f"Error in agent chat endpoint: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "signal": ResponseSignal.AGENT_RESPONSE_ERROR.value,
-                "error": "Session expired or invalid."
-            }
         )
 
 @agent_router.post("/resume", response_model=ChatResponse)
@@ -354,15 +344,6 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
         logger.warning(f"Thread state error in resume endpoint: {exc}")
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "signal": ResponseSignal.AGENT_RESPONSE_ERROR.value,
-                "error": "Session expired or invalid."
-            }
-        )
-    except Exception as e:
-        logger.error(f"Error resuming graph execution: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "signal": ResponseSignal.AGENT_RESPONSE_ERROR.value,
                 "error": "Session expired or invalid."
@@ -543,7 +524,7 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, curr
 
         except Exception as e:
             logger.error(f"Error in stream_graph_execution: {e}", exc_info=True)
-            yield f"data: {json.dumps({'type': 'error', 'content': 'Error during execution'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': public_message_for(e), 'code': getattr(e, 'code', 'internal_error')})}\n\n"
         finally:
             yield "data: [DONE]\n\n"
 

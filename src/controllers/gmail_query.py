@@ -4,7 +4,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from helpers.exceptions import LLMOutputError
+from helpers.exceptions import LLMOutputError, LLMUnavailable
 from helpers.llm_json import llm_json, parse_llm_json
 
 logger = logging.getLogger("uvicorn.error")
@@ -68,7 +68,7 @@ def parse_gmail_plan(raw_text: Optional[str]) -> GmailSearchPlan:
 
 
 async def build_gmail_query(generation_client, user_query: str, chat_history: list = None) -> GmailSearchPlan:
-    """Ask the model for a Gmail search; never raises (a failure yields the latest emails)."""
+    """Ask the model for a Gmail search. An unusable reply yields the latest emails; an unavailable model raises."""
     if generation_client is None:
         return GmailSearchPlan()
     try:
@@ -84,6 +84,8 @@ async def build_gmail_query(generation_client, user_query: str, chat_history: li
     except LLMOutputError as exc:
         logger.warning(f"Gmail query reply unusable ({exc}); using the latest emails")
         return GmailSearchPlan()
+    except LLMUnavailable:
+        raise  # searching "the latest emails" instead would silently ignore what the user asked for
     except Exception as exc:
         logger.warning(f"Failed to generate Gmail query: {exc}")
         return GmailSearchPlan()

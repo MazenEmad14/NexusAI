@@ -74,9 +74,12 @@ class OpenAIProvider(LLMInterface):
         if not self.generation_model_id:
             self.logger.error("Generation model for OpenAI was not set")
             return None
-        response = self.client.chat.completions.create(
-            **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
-        )
+        try:
+            response = self.client.chat.completions.create(
+                **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
+            )
+        except Exception as exc:
+            raise self._unavailable(exc) from exc
         return self._extract_text(response)
 
     async def agenerate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
@@ -84,9 +87,12 @@ class OpenAIProvider(LLMInterface):
         if not self.generation_model_id:
             self.logger.error("Generation model for OpenAI was not set")
             return None
-        response = await self.async_client.chat.completions.create(
-            **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
-        )
+        try:
+            response = await self.async_client.chat.completions.create(
+                **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
+            )
+        except Exception as exc:
+            raise self._unavailable(exc) from exc
         return self._extract_text(response)
 
     def _processed_texts(self, texts: list[str]) -> list[str]:
@@ -109,7 +115,10 @@ class OpenAIProvider(LLMInterface):
         processed = self._processed_texts(texts)
         if not processed:
             return []
-        response = self.client.embeddings.create(model=self.embedding_model_id, input=processed)
+        try:
+            response = self.client.embeddings.create(model=self.embedding_model_id, input=processed)
+        except Exception as exc:
+            raise self._unavailable(exc) from exc
         return self._extract_embeddings(response)
 
     async def aembed_text(self, text: str, document_type: str = None):
@@ -123,7 +132,10 @@ class OpenAIProvider(LLMInterface):
         processed = self._processed_texts(texts)
         if not processed:
             return []
-        response = await self.async_client.embeddings.create(model=self.embedding_model_id, input=processed)
+        try:
+            response = await self.async_client.embeddings.create(model=self.embedding_model_id, input=processed)
+        except Exception as exc:
+            raise self._unavailable(exc) from exc
         return self._extract_embeddings(response)
 
     async def aclose(self):

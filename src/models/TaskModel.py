@@ -44,13 +44,9 @@ class TaskModel(BaseDataModel):
         return cls(db_client)
 
     async def create_task(self, task: Task) -> bool:
-        try:
-            task_dict = task.dict(by_alias=True, exclude={"task_id"}, exclude_none=True)
-            result = await self.collection.insert_one(task_dict)
-            return result.acknowledged
-        except Exception as e:
-            logger.error(f"Error creating task: {e}")
-            return False
+        task_dict = task.dict(by_alias=True, exclude={"task_id"}, exclude_none=True)
+        result = await self.collection.insert_one(task_dict)
+        return result.acknowledged
 
     @staticmethod
     def make_description_key(description: str) -> str:

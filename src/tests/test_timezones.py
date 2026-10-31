@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from controllers.classifier import ClassifierController
+from helpers.exceptions import ExternalServiceError
 from helpers.timezones import day_bounds, is_valid_timezone, local_now, resolve_timezone
 from services import notification_engine
 from services.daily_summary import DailySummaryService
@@ -156,7 +157,7 @@ def test_listing_events_uses_utc_with_an_offset_and_reports_failures():
             raise RuntimeError("quota exceeded")
 
     calendar.service = SimpleNamespace(events=lambda: Failing())
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ExternalServiceError):
         calendar.list_events()  # an empty list must mean "no events", never "Calendar failed"
 
 
@@ -168,7 +169,7 @@ def test_searching_gmail_reports_failures_instead_of_an_empty_list():
             raise RuntimeError("backend error")
 
     gmail.service = SimpleNamespace(users=lambda: SimpleNamespace(messages=lambda: Messages()))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ExternalServiceError):
         gmail.search_emails("is:unread")
 
 

@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from agent import AgentDeps, build_agent_graph
 from controllers.proactive_agent import evaluate_inbox_and_notify
 from helpers.config import get_settings
+from helpers.error_handlers import install_error_handlers
 from helpers.services import Services
 from models.UserModel import UserModel
 from models.indexes import ensure_all_indexes
@@ -132,6 +133,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+install_error_handlers(app)
 
 # ── CORS Middleware ──
 app.add_middleware(

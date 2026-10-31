@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent import AgentDeps
 from agent.nodes import actions, intake
+from helpers.exceptions import ExternalServiceError, ValidationFailed
 from stores.gmail.GmailService import GmailService
 
 SRC = Path(__file__).resolve().parents[1]
@@ -75,7 +76,8 @@ def test_arabic_subject_and_body_survive_sending():
 
 def test_a_failed_send_is_not_retried_so_it_cannot_deliver_twice():
     service = FakeSendService(fail=True)
-    assert _gmail(service).send_email("a@example.com", "hi", "body") is None
+    with pytest.raises(ExternalServiceError):  # reported, not hidden as a falsy result
+        _gmail(service).send_email("a@example.com", "hi", "body")
     assert service.calls == 1  # the old code tried three times, sleeping in between
 
 
@@ -86,7 +88,8 @@ def test_recipients_are_cleaned_and_limited():
     assert parsed["To"] == "a@example.com, b@example.com"
 
     too_many = ", ".join(f"u{i}@example.com" for i in range(30))
-    assert _gmail(FakeSendService()).send_email(too_many, "hi", "body") is None
+    with pytest.raises(ValidationFailed):
+        _gmail(FakeSendService()).send_email(too_many, "hi", "body")
 
 
 # ── 2.15 / 2.17 / 2.19 ───────────────────────────────────────────────────────

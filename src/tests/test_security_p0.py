@@ -184,8 +184,12 @@ def test_email_recipients_are_validated_and_headers_cannot_be_injected():
 
     service = GmailService()
     service.service = object()  # would raise if a send were attempted
-    assert service.send_email("a@example.com\nBcc: evil@example.com", "hi", "body") is None
-    assert service.send_email("a@example.com", "hi\r\nBcc: evil@example.com", "body") is None
+    from helpers.exceptions import ValidationFailed
+
+    with pytest.raises(ValidationFailed):
+        service.send_email("a@example.com\nBcc: evil@example.com", "hi", "body")
+    with pytest.raises(ValidationFailed):
+        service.send_email("a@example.com", "hi\r\nBcc: evil@example.com", "body")
     assert has_header_injection("x\ny")
 
 

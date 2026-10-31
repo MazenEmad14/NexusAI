@@ -55,7 +55,10 @@ class CoHereProvider(LLMInterface):
         if not self.generation_model_id:
             self.logger.error("Generation model for CoHere was not set")
             return None
-        response = self.client.chat(**self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature))
+        try:
+            response = self.client.chat(**self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature))
+        except Exception as exc:
+            raise self._unavailable(exc) from exc
         return self._extract_text(response)
 
     async def agenerate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
@@ -63,7 +66,10 @@ class CoHereProvider(LLMInterface):
         if not self.generation_model_id:
             self.logger.error("Generation model for CoHere was not set")
             return None
-        response = await self.async_client.chat(**self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature))
+        try:
+            response = await self.async_client.chat(**self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature))
+        except Exception as exc:
+            raise self._unavailable(exc) from exc
         return self._extract_text(response)
 
     def embed_text(self, text: str, document_type: str = None):
@@ -91,7 +97,10 @@ class CoHereProvider(LLMInterface):
         kwargs = self._embed_kwargs(document_type)
         embeddings = []
         for batch in self._batches(texts):
-            response = self.client.embed(texts=batch, **kwargs)
+            try:
+                response = self.client.embed(texts=batch, **kwargs)
+            except Exception as exc:
+                raise self._unavailable(exc) from exc
             if not response or not response.embeddings or not response.embeddings.float:
                 self.logger.error("Error while embedding text with CoHere")
                 return None
@@ -109,7 +118,10 @@ class CoHereProvider(LLMInterface):
         kwargs = self._embed_kwargs(document_type)
         embeddings = []
         for batch in self._batches(texts):
-            response = await self.async_client.embed(texts=batch, **kwargs)
+            try:
+                response = await self.async_client.embed(texts=batch, **kwargs)
+            except Exception as exc:
+                raise self._unavailable(exc) from exc
             if not response or not response.embeddings or not response.embeddings.float:
                 self.logger.error("Error while embedding text with CoHere")
                 return None

@@ -1,6 +1,6 @@
 from .BaseController import BaseController
 from .llm_schemas import Classification, EmailDetails, FileDetails, MeetingDetails, ReminderDetails
-from helpers.exceptions import LLMOutputError
+from helpers.exceptions import LLMOutputError, LLMUnavailable
 from helpers.llm_json import llm_json_sync
 import logging
 
@@ -221,6 +221,8 @@ RESPOND WITH JSON ONLY! NO TEXT!"""
                 "priority": result.priority or self._detect_priority(query),
             }
 
+        except LLMUnavailable:
+            raise  # the caller reports it; answering "retrieval" would show a misleading "nothing found"
         except Exception as e:
             logger.error(f"Error in query classification: {e}")
             return {"request_type": "retrieval", "action_type": "", "priority": self._detect_priority(query)}
@@ -383,6 +385,8 @@ Return ONLY a valid JSON object with this exact schema:
         except LLMOutputError as exc:
             logger.error(f"[extract_with_llm] No usable JSON in the model's reply: {exc}")
             return {}
+        except LLMUnavailable:
+            raise
         except Exception as exc:
             logger.error(f"Error extracting action details: {exc}")
             return {}

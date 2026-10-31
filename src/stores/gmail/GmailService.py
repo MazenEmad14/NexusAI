@@ -10,7 +10,8 @@ from typing import List, Dict, Optional, Any
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from helpers.exceptions import GoogleAuthRequiredException
+from helpers.exceptions import ExternalServiceError, GoogleAuthRequiredException, ValidationFailed
+from stores.google_errors import translate_google_error
 from helpers.validation import has_header_injection, parse_recipients
 import httplib2
 import google_auth_httplib2
@@ -148,10 +149,13 @@ class GmailService:
             logger.error("Gmail service not authenticated")
             return []
 
-        with self.lock:
-            results = self.service.users().messages().list(
-                userId='me', q=query, maxResults=max_results
-            ).execute()
+        try:
+            with self.lock:
+                results = self.service.users().messages().list(
+                    userId='me', q=query, maxResults=max_results
+                ).execute()
+        except Exception as exc:
+            raise translate_google_error(exc, "Gmail") from exc
 
         messages = results.get('messages', [])
         if not messages:
@@ -163,6 +167,8 @@ class GmailService:
             if email_data:
                 email_list.append(email_data)
 
+        if not email_list:
+            raise ExternalServiceError("Gmail listed messages but none could be read", service="Gmail")
         return email_list
 
     def get_email(self, message_id: str) -> Optional[Dict]:
@@ -188,15 +194,17 @@ class GmailService:
 
         Sending is not retried: if a request times out after Gmail accepted the
         message, a retry would deliver a duplicate.
+
+        Raises ValidationFailed for an unusable recipient or subject, GoogleAuthRequiredException if
+        Google rejects the token, and ExternalServiceError for any other Gmail failure.
         """
         if not self.service:
-            logger.error("Gmail service not authenticated")
-            return None
+            raise GoogleAuthRequiredException("No Google account connected.")
 
         recipients = parse_recipients(to)
         if recipients is None or has_header_injection(to, subject):
             logger.error("Refusing to send email: invalid recipient or header injection attempt")
-            return None
+            raise ValidationFailed("That email address is not valid, so nothing was sent.")
         to = ", ".join(recipients)
 
         try:
@@ -224,9 +232,9 @@ class GmailService:
                 "status": "sent"
             }
 
-        except Exception as e:
-            logger.error(f"Error sending email: {e}")
-            return None
+        except Exception as exc:
+            logger.error(f"Error sending email: {exc}")
+            raise translate_google_error(exc, "Gmail") from exc
 
     def _parse_email(self, message: dict) -> Dict:
         """Parse a raw Gmail message into a clean dictionary."""

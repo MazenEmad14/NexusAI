@@ -2,6 +2,8 @@
 
 import logging
 from agent.deps import AgentDeps
+from agent.errors import fail
+from helpers.exceptions import LLMUnavailable
 from agent.history import append_chat_turn
 from agent.state import AgentState
 from controllers.classifier import ClassifierController
@@ -12,10 +14,17 @@ import time
 
 logger = logging.getLogger('uvicorn.error')
 
+PER_TURN_METADATA = ("error_code", "unavailable_sources", "sources_searched")
+
 
 async def save_query_node(state: AgentState, deps: AgentDeps) -> AgentState:
     """Save the incoming query to MongoDB and fetch available files."""
     db_client = deps.db_client
+
+    # Metadata is carried from turn to turn; these describe one turn only, so a new turn starts clean
+    # (otherwise a successful answer would still carry the previous turn's error code).
+    for key in PER_TURN_METADATA:
+        state["metadata"].pop(key, None)
 
     if db_client is not None:
         from models.QueryModel import QueryModel
@@ -55,10 +64,15 @@ def detect_request_type_node(state: AgentState, deps: AgentDeps) -> AgentState:
     generation_client = deps.generation_client
 
     classifier = ClassifierController(generation_client=generation_client)
-    classification = classifier.classify_query(
-        query=state["query"],
-        chat_history=state.get("chat_history", [])
-    )
+    try:
+        classification = classifier.classify_query(
+            query=state["query"],
+            chat_history=state.get("chat_history", [])
+        )
+    except LLMUnavailable as exc:
+        logger.error(f"Cannot classify the request: {exc}")
+        state["request_type"] = "error"  # routing then goes straight to the reply
+        return fail(state, exc)
 
     state["request_type"] = classification["request_type"]
     state["action_type"] = classification.get("action_type", "")
