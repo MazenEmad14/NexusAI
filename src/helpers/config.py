@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     INBOX_CHECK_INTERVAL_MINUTES: int = Field(default=1, ge=1)        # proactive check for urgent email
     THREAD_RETENTION_DAYS: int = Field(default=30, ge=1)              # idle conversations are deleted after this
     WHISPER_MODEL: str = "base"                    # speech-to-text model size (only with requirements-voice.txt)
+    LOG_FORMAT: str = "text"                       # "text" (readable) or "json" (one object per line)
 
     # Sign-in / sign-up throttling (counted in MongoDB, so it holds across workers)
     LOGIN_WINDOW_MINUTES: int = Field(default=15, ge=1)
@@ -164,6 +165,14 @@ class Settings(BaseSettings):
         value = value.strip().lower() if isinstance(value, str) else value
         if value not in DISTANCE_METHODS:
             raise ValueError(f"must be one of {', '.join(DISTANCE_METHODS)}")
+        return value
+
+    @field_validator("LOG_FORMAT", mode="before")
+    @classmethod
+    def known_log_format(cls, value):
+        value = value.strip().lower() if isinstance(value, str) else value
+        if value not in ("text", "json"):
+            raise ValueError('must be "text" or "json"')
         return value
 
     @field_validator("MONGODB_URL")

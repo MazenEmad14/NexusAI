@@ -148,5 +148,5 @@ async def conversational_node(state: AgentState, deps: AgentDeps) -> AgentState:
     state["status"] = "success"
     state["metadata"]["source"] = "conversational"
 
-    logger.info(f"[conversational_node] Responded to greeting: {query!r}")
+    logger.info("[conversational_node] replied to a greeting")
     return state

@@ -47,7 +47,8 @@ def extract_action_details_node(state: AgentState, deps: AgentDeps) -> AgentStat
     if state["action_type"] == "data_analysis" and details.get("file_path"):
         state["file_path"] = details["file_path"]
 
-    logger.info(f"Action details extracted: {details}")
+    # Which fields were filled in, never their values (recipient, subject, body, attendees ...).
+    logger.info(f"Action details extracted for {state['action_type']}: fields={sorted(k for k, v in details.items() if v)}")
     return state
 
 

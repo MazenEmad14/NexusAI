@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pymongo.errors import PyMongoError
 
 from helpers.exceptions import DomainError
+from helpers.logging_setup import request_id_var
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -29,7 +30,11 @@ def public_message_for(exc: BaseException) -> str:
 
 
 def _json(status_code: int, message: str, code: str) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"detail": message, "code": code})
+    content = {"detail": message, "code": code}
+    request_id = request_id_var.get()
+    if request_id:
+        content["request_id"] = request_id  # what a user quotes to support; it finds the log lines
+    return JSONResponse(status_code=status_code, content=content)
 
 
 def install_error_handlers(app: FastAPI) -> None:

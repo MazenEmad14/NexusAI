@@ -123,6 +123,14 @@ mini-RAG-APP/ (NexusAI Workspace)
 4. **Google Credentials (Optional but required for Gmail/Calendar):**
    Place your Google `credentials.json` file inside the `src/` directory. On startup, the app will request authorization to generate `token.json` and `calendar_token.json`.
 
+## Logs and health
+
+- Every response has an `X-Request-ID` header, and every log line written for that request carries the same id
+  (error responses also include it as `request_id`). Set `LOG_FORMAT=json` in `src/.env` for one JSON object per line.
+- Logs never contain what users type, the text of their mail or documents, or their addresses.
+- `GET /health` answers while the process is up. `GET /health/ready` also checks MongoDB, the vector store and the
+  configuration, and answers `503` with the name of whatever is failing.
+
 ## Running the App
 
 ### Backend (FastAPI & Agent Engine)
