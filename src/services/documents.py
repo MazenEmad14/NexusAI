@@ -155,7 +155,7 @@ async def index_project_chunks(services: Any, project_id: str, do_reset: bool, p
 
     page_no, inserted_items_count = 1, 0
     while True:
-        page_chunks = await chunk_model.get_poject_chunks(project_id=project.id, page_no=page_no)
+        page_chunks = await chunk_model.get_project_chunks(project_id=project.id, page_no=page_no)
         if not page_chunks:
             break
 

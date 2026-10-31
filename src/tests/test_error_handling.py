@@ -22,7 +22,6 @@ from helpers.exceptions import (
     DomainError, EmailAlreadyRegistered, ExternalServiceError, GoogleAuthRequiredException,
     LLMOutputError, LLMUnavailable, ValidationFailed,
 )
-from helpers.google_context import set_google_token
 from routes import agent as agent_routes
 from routes.dashboard import envelope
 from stores.llm.providers.CoHereProvider import CoHereProvider

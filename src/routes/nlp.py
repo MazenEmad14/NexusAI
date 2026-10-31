@@ -10,7 +10,6 @@ from controllers import NLPController
 import logging
 from models import ResponseSignal
 from models.ProjectModel import ProjectModel
-from models.ChunkModel import ChunkModel
 from services.documents import index_project_chunks
 from services.jobs import INDEX_DOCUMENTS, submit_job
 

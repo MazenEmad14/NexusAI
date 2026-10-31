@@ -9,7 +9,6 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 import requests
 import json
-import time
 
 BASE = "http://localhost:5000"
 
@@ -42,7 +41,7 @@ def test_endpoint(method, path, label, body=None, timeout=10):
             print(f"  Response (text): {r.text[:500]}")
             return r.text
     except requests.exceptions.ConnectionError:
-        print(f"  FAIL: CONNECTION REFUSED - backend not reachable")
+        print("  FAIL: CONNECTION REFUSED - backend not reachable")
         return None
     except requests.exceptions.Timeout:
         print(f"  FAIL: TIMEOUT after {timeout}s")
@@ -67,7 +66,7 @@ def main():
 
     if health:
         data = health.get("data", {})
-        print(f"\n  SERVICE STATUS SUMMARY:")
+        print("\n  SERVICE STATUS SUMMARY:")
         print(f"    MongoDB:  {data.get('database', 'unknown')}")
         print(f"    Gmail:    {data.get('gmail', 'unknown')}")
         print(f"    Calendar: {data.get('calendar', 'unknown')}")
@@ -102,7 +101,7 @@ def main():
     )
 
     if chat_result:
-        print(f"\n  CHAT RESPONSE ANALYSIS:")
+        print("\n  CHAT RESPONSE ANALYSIS:")
         print(f"    response: {str(chat_result.get('response', ''))[:200]}")
         print(f"    type:     {chat_result.get('type', '')}")
         print(f"    status:   {chat_result.get('status', '')}")
@@ -122,7 +121,7 @@ def main():
     )
 
     if chat_action:
-        print(f"\n  ACTION RESPONSE ANALYSIS:")
+        print("\n  ACTION RESPONSE ANALYSIS:")
         print(f"    response: {str(chat_action.get('response', ''))[:200]}")
         print(f"    type:     {chat_action.get('type', '')}")
         print(f"    status:   {chat_action.get('status', '')}")
@@ -143,7 +142,7 @@ def main():
             timeout=30,
         )
         if resume_result:
-            print(f"\n  RESUME RESPONSE:")
+            print("\n  RESUME RESPONSE:")
             print(f"    response: {str(resume_result.get('response', ''))[:200]}")
             print(f"    status:   {resume_result.get('status', '')}")
 

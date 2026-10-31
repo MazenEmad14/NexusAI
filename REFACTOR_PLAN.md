@@ -238,6 +238,16 @@ Known remaining issue related to 2.2: checkpoints store the full graph state, wh
 - Add `ruff` + `mypy` + pre-commit; add GitHub Actions: install, lint, test, `pip-audit`, `npm audit`.
 - Docs: README should state the OAuth setup (`credentials.json`), required env vars, how to run Mongo/Qdrant (`docker/docker-compose.yml`), and the multi-user model.
 
+
+**P3 status: mostly done.**
+
+- **Repo hygiene: done.** The nine `src/test_*.py` scripts (not pytest tests; several call live APIs), the two audit scripts that sat in `src/tests`, and the untracked `test_audit.py`, `test_gmail.py`, `test_groq.py` and `dummy.csv` from the root are now in `scripts/manual/` (renamed `try_*` so they can never be collected as tests; moved, not deleted, since nothing says which are dead). `backup_script.py` and `check_mongo.py` are in `scripts/` and read `MONGODB_URL`/`MONGODB_DATABASE` instead of a hard-coded `admin:admin` login. The course-template Postman collection is deleted. The root `tests/` suite (mock-everything, 28 errors since before P2 and not run by CI) is deleted: startup now does real database work, and `src/tests` (421 tests against a real MongoDB) covers what it meant to. `pytest.ini` points at `src/tests`, so a bare `pytest` works. Left in place on purpose: the `.docx`/`.pptx` project documents (yours to keep or move) and `BACKEND_REVIEW.md`.
+- **Dead code: mostly already gone.** `send_report_email_node`, the storage-poking checkpoint helpers and the global-queue branches were removed in P1/P2; `event_bus` is now per-user and used; `get_database_path` is still used by the vector-store factory. The 75 unused imports and redefinitions ruff found (including the duplicated `asyncio` in `routes/agent.py`) are removed.
+- **Typos: done.** `VectorDBInerface.py` is `VectorDBInterface.py` and `get_poject_chunks` is `get_project_chunks` (renamed with `git mv`, all uses updated). The `*_DAFAULT_*` settings were fixed in 3.7; the old spellings are still accepted from an existing `.env`.
+- **Lint and CI: done.** `ruff.toml` (syntax errors, undefined names, unused imports; formatting left alone) is a blocking CI step and a `pre-commit` hook. `mypy.ini` is added and runs in CI as a report only: it finds 174 existing issues in 46 files (95 of them `[assignment]`), so making it blocking is a separate cleanup. CI also runs `pip-audit` on the lock (report only, never run yet) and `npm audit --omit=dev --audit-level=high`, which blocks: it found six high-severity advisories (`vite`, `postcss`, `nanoid`, `source-map-js`, `react-router`), all fixed by `npm audit fix` without a major upgrade (lock file only; tests and build pass).
+- **Docs: done.** The README's Google step described the old shared `token.json`; it now covers the OAuth client, redirect URI, MongoDB via Docker, and the multi-user model.
+- **Not done:** one response shape for the API (`ResponseSignal` bodies, `{"status","data","message"}` envelopes, and the error JSON all coexist). Unifying them changes what the frontend reads from every route, so it needs its own change with the frontend updated alongside.
+
 ---
 
 ## 5. Suggested execution plan

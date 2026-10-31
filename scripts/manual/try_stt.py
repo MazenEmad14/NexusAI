@@ -1,5 +1,4 @@
 import requests
-import sys
 import imageio_ffmpeg
 import os
 print("FFMPEG PATH:", imageio_ffmpeg.get_ffmpeg_exe())

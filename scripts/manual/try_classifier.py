@@ -1,7 +1,6 @@
 import asyncio
 from controllers.classifier import ClassifierController
 from helpers.config import get_settings
-from stores.llm.providers.OpenAIProvider import OpenAIProvider
 from stores.llm.providers.GroqProvider import GroqProvider
 
 async def test_classifier():
