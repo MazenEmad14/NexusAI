@@ -13,6 +13,7 @@ python-multipart==0.0.18          # file uploads (UploadFile) need it
 email-validator==2.2.0            # pydantic EmailStr (sign-up / sign-in)
 pydantic==2.10.3
 pydantic-settings==2.14.0
+python-dotenv==1.2.4             # read directly to spot misspelt names in the env file
 aiofiles==23.2.1
 httpx==0.28.1
 

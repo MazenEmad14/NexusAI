@@ -377,7 +377,7 @@ def _get_whisper_model():
                 os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
             except ImportError:
                 pass
-            _whisper_model = whisper.load_model("base")
+            _whisper_model = whisper.load_model(get_settings().WHISPER_MODEL)
         return _whisper_model
 
 
