@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timedelta
 
 from helpers.timezones import day_bounds, local_now, resolve_timezone
+from helpers.prompts import render
 from models.ReminderModel import ReminderModel
 from models.TaskModel import TaskModel
 
@@ -132,33 +133,9 @@ class DailySummaryService:
         data = await self.collect(project_id=project_id, user_id=user_id)
         text = self.render_source_text(data)
 
-        prompt = f"""You are Aria, an elite executive assistant providing a daily briefing.
-Use the available calendar, email, task, and reminder data. Highlight critical and high priority items first.
-
-Mandatory Response Rules:
-1. Be human, natural, and highly friendly. Avoid scripted templates or artificial introductions.
-2. Be concise and answer exactly what was asked. Keep simple answers short, and complex answers detailed but without fluff. Make it suitable and direct for voice interaction.
-3. NEVER use Emojis.
-4. Do not repeat the user's question at the beginning of the response.
-5. If an action was taken, confirm it simply and clearly without excessive celebration.
-6. If there is no result or an error occurred, state it directly and calmly without over-apologizing or giving complex technical explanations.
-7. Always respond in the EXACT same language that the user used (Arabic or English).
-
-[MEETINGS]
-{text["events_text"]}
-
-[UNREAD EMAILS]
-{text["emails_text"]}
-
-[PENDING TASKS]
-{text["tasks_text"]}
-
-[UPCOMING REMINDERS]
-{text["reminders_text"]}
-
-Draft a concise morning briefing."""
+        prompt = render("briefing", "daily", events=text["events_text"], emails=text["emails_text"], tasks=text["tasks_text"], reminders=text["reminders_text"])
         today = local_now(self.timezone_name).strftime("%A, %Y-%m-%d")
-        prompt = f"Today is {today} ({resolve_timezone(self.timezone_name).key}).\n\n" + prompt
+        prompt = render("briefing", "daily_prefix", today=today, zone=resolve_timezone(self.timezone_name).key) + prompt
 
         summary = ""
         if self.generation_client:

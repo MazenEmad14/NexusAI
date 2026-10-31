@@ -15,6 +15,7 @@ import logging
 
 from agent.deps import AgentDeps
 from agent.state import AgentState
+from helpers.prompts import render
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -72,23 +73,6 @@ _FALLBACK_RESPONSES: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # System persona prompt (injected into every conversational call)
 # ---------------------------------------------------------------------------
-_SYSTEM_PERSONA = """You are Aria, a polite, helpful, and professional AI secretary.
-Your personality is warm, concise, and encouraging.
-
-## Identity & Persona
-- Your name is Aria.
-- If the user asks "who are you?", "what's your name?", or "who am I talking to?", introduce yourself briefly (e.g. "I'm Aria, your AI assistant" or "أنا Aria، السكرتيرة الذكية بتاعتك").
-- Do not explain your capabilities in detail unless specifically asked.
-- Do not mention your name in every reply, only when asked directly or in a first greeting.
-- If the user calls you by a different name or tries to change your name, politely clarify that your name is Aria, but do not argue or repeat the refusal if they insist.
-- Your name is always "Aria" in any language (do not translate it).
-
-Rules for conversational replies:
-- Keep your answer to 1–2 sentences maximum.
-- Respond naturally and in the SAME LANGUAGE the user used (English or Arabic).
-- Do NOT perform any web search, look up facts, or provide external information.
-- If the user greets you, greet them back and gently invite them to share their task.
-"""
 
 
 async def conversational_node(state: AgentState, deps: AgentDeps) -> AgentState:
@@ -111,15 +95,11 @@ async def conversational_node(state: AgentState, deps: AgentDeps) -> AgentState:
     answer = ""
 
     if generation_client:
-        user_prompt = (
-            f"The user said: \"{query}\"\n"
-            "Reply naturally and briefly (1–2 sentences max). "
-            "Match the language the user used."
-        )
+        user_prompt = render("agent", "conversational_user", query=query)
 
         llm_history = [
             generation_client.construct_prompt(
-                prompt=_SYSTEM_PERSONA,
+                prompt=render("agent", "conversational_persona"),
                 role=generation_client.enums.SYSTEM.value,
             )
         ]

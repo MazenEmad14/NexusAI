@@ -5,6 +5,7 @@ from helpers.config import get_settings
 from agent.errors import fail
 from helpers.exceptions import ExternalServiceError
 from agent.state import AgentState
+from helpers.prompts import render
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -64,19 +65,14 @@ async def web_search_node(state: AgentState, deps: AgentDeps) -> AgentState:
 
     if not results:
         logger.warning("No web search results found. Proceeding with empty context for conversational fallback.")
-        snippets_text = "No web search results found. If the user is just saying hello or asking a general conversational question, respond naturally. Otherwise, say you couldn't find the information."
+        snippets_text = render("agent", "web_no_results")
     else:
         # Format the snippets for the LLM
         snippets_text = "\n\n".join([f"Source: {r.get('href', 'Unknown URL')}\nTitle: {r.get('title', '')}\nSnippet: {r.get('body', '')}" for r in results])
     
     answer = ""
     if generation_client:
-        prompt = f"""You are a live web search agent. Use the provided search snippets to answer the user's query. Provide a concise, factual answer. Always cite your sources using the links provided in the snippets.
-
-Search Snippets:
-{snippets_text}
-
-User Query: {query}"""
+        prompt = render("agent", "web_answer", snippets=snippets_text, query=query)
         
         try:
             answer = await generation_client.agenerate_text(prompt=prompt,
