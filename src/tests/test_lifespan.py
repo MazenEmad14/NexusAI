@@ -158,7 +158,7 @@ def _fake_factories(monkeypatch, recorder, generation_close_fails=False, vector_
 def test_a_failed_startup_releases_what_it_had_already_opened(isolated_settings, monkeypatch):
     recorder = Recorder()
     _fake_factories(monkeypatch, recorder)
-    def failing_build(**kwargs):
+    def failing_build(*args, **kwargs):
         raise RuntimeError("the graph could not be built")
 
     monkeypatch.setattr(main, "build_agent_graph", failing_build)

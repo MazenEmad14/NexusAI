@@ -13,13 +13,13 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
-from controllers.agent_graph import build_agent_graph
+from agent import AgentDeps, build_agent_graph
 from controllers.proactive_agent import evaluate_inbox_and_notify
 from helpers.config import get_settings
 from helpers.services import Services
 from models.UserModel import UserModel
 from models.indexes import ensure_all_indexes
-from routes import agent, auth, base, dashboard, data, local_auth, nlp
+from routes import agent as agent_routes, auth, base, dashboard, data, local_auth, nlp
 from services.notification_engine import NotificationEngine
 from stores.checkpoint.MongoCheckpointer import MongoCheckpointer
 from stores.llm.LLMProviderFactory import LLMProviderFactory
@@ -89,11 +89,13 @@ async def lifespan(app: FastAPI):
         checkpointer = MongoCheckpointer(mongo_db)
         await checkpointer.setup()
         agent_graph = build_agent_graph(
-            db_client=mongo_db,
-            generation_client=generation_client,
-            embedding_client=embedding_client,
-            vectordb_client=vectordb_client,
-            template_parser=template_parser,
+            AgentDeps(
+                db_client=mongo_db,
+                generation_client=generation_client,
+                embedding_client=embedding_client,
+                vectordb_client=vectordb_client,
+                template_parser=template_parser,
+            ),
             checkpointer=checkpointer,
         )
 
@@ -145,5 +147,5 @@ app.include_router(auth.auth_router)
 app.include_router(local_auth.local_auth_router)
 app.include_router(data.data_router)
 app.include_router(nlp.nlp_router)
-app.include_router(agent.agent_router)
+app.include_router(agent_routes.agent_router)
 app.include_router(dashboard.dashboard_router)

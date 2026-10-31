@@ -20,7 +20,8 @@ NexusAI integrates multiple sophisticated capabilities into a single cohesive pl
 ```text
 mini-RAG-APP/ (NexusAI Workspace)
 |-- src/                    # FastAPI backend
-|   |-- controllers/        # Agent logic (LangGraph, Proactive Agent)
+|   |-- agent/              # The LangGraph agent: graph.py, routing.py, state.py, nodes/
+|   |-- controllers/        # Classifier, summariser, task extractor, RAG, proactive agent
 |   |-- services/           # Core services (Gmail, Calendar, Notifications, RAG)
 |   |-- helpers/            # Application settings
 |   |-- models/             # Data models and database schemas

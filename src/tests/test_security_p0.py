@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # ── 1.1 per-request Google clients ───────────────────────────────────────────
 def test_google_clients_are_never_shared_between_users(monkeypatch):
-    from controllers import agent_graph
+    from agent.google_clients import gmail_for_request
     from helpers.google_context import set_google_token
     from stores.gmail.GmailService import GmailService
 
@@ -28,7 +28,7 @@ def test_google_clients_are_never_shared_between_users(monkeypatch):
 
     def run(user):
         set_google_token({"user": user})  # what a request does before invoking the graph
-        client = agent_graph._gmail_for_state()
+        client = gmail_for_request()
         time.sleep(0.02)  # another user authenticates while this one is in flight
         seen[user] = client.service
 
@@ -40,13 +40,13 @@ def test_google_clients_are_never_shared_between_users(monkeypatch):
 
 
 def test_graph_nodes_refuse_to_act_without_the_users_own_token():
-    from controllers import agent_graph
-
+    from agent import AgentDeps
+    from agent.nodes import actions
     from helpers.google_context import set_google_token
 
     set_google_token(None)
     state = {"action_details": {"recipient": "x@example.com", "subject": "s", "body": "b"}, "metadata": {}}
-    result = agent_graph.send_email_node(state)
+    result = actions.send_email_node(state, AgentDeps())
     assert result["status"] == "error"
     assert "connect your Google account" in result["result"]
 
@@ -89,7 +89,7 @@ def test_project_ids_are_namespaced_per_user_and_reject_traversal():
 
 
 def test_data_analysis_only_reads_files_inside_the_users_project(tmp_path, monkeypatch):
-    from controllers import data_analysis_node as dan
+    from agent.nodes import data_analysis as dan
 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
@@ -109,7 +109,7 @@ def test_data_analysis_only_reads_files_inside_the_users_project(tmp_path, monke
 # ── 1.5 no LLM-generated code is executed ───────────────────────────────────
 def test_analysis_plan_rejects_unsafe_operations_and_unknown_columns():
     import pandas as pd
-    from controllers.data_analysis_node import _execute_plan
+    from agent.nodes.data_analysis import _execute_plan
 
     df = pd.DataFrame({"Region": ["a", "b"], "Sales": ["1,000", "2"]})
     table, chart, x = _execute_plan(df, {"op": "aggregate", "column": "Sales", "agg": "sum", "group_by": "Region", "chart": "bar"})
@@ -125,7 +125,7 @@ def test_analysis_plan_rejects_unsafe_operations_and_unknown_columns():
 
 
 def test_python_repl_is_no_longer_used():
-    source = (Path(__file__).resolve().parents[1] / "controllers" / "data_analysis_node.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "agent" / "nodes" / "data_analysis.py").read_text(encoding="utf-8")
     assert "PythonREPL" not in source and "exec(" not in source and "eval(" not in source
 
 

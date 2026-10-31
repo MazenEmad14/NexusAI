@@ -13,7 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from controllers import agent_graph
+from agent import AgentDeps
+from agent.nodes import actions, intake
 from stores.gmail.GmailService import GmailService
 
 SRC = Path(__file__).resolve().parents[1]
@@ -90,8 +91,9 @@ def test_recipients_are_cleaned_and_limited():
 
 # ── 2.15 / 2.17 / 2.19 ───────────────────────────────────────────────────────
 def test_the_dead_report_email_node_is_gone():
-    assert not hasattr(agent_graph, "send_report_email_node")
-    assert "send_report_email" not in (SRC / "controllers" / "agent_graph.py").read_text(encoding="utf-8")
+    assert not hasattr(actions, "send_report_email_node")
+    for path in (SRC / "agent").rglob("*.py"):
+        assert "send_report_email" not in path.read_text(encoding="utf-8"), path.name
 
 
 def test_the_nlp_routes_import_asyncio():
@@ -132,7 +134,7 @@ def test_available_files_are_the_callers_own_uploads_found_by_scoped_project():
                 await assets.create_asset(Asset(asset_project_id=project.id, asset_type="file", asset_name=file_name, asset_size=10))
 
             state = {"query": "analyse my file", "user_id": "alice", "project_id": "default", "metadata": {}, "chat_history": []}
-            result = await agent_graph.save_query_node(state, db_client=db)
+            result = await intake.save_query_node(state, AgentDeps(db_client=db))
             return result["metadata"]["available_files"]
         finally:
             await client.drop_database(name)

@@ -16,7 +16,8 @@ import pandas as pd
 
 from controllers.ProjectController import ProjectController
 from helpers.project_scope import scoped_project_id
-from models.agent_state import AgentState
+from agent.deps import AgentDeps
+from agent.state import AgentState
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -167,9 +168,9 @@ def _fallback_summary(table: pd.DataFrame) -> str:
     return table.head(10).to_string(index=False)
 
 
-async def data_analysis_node(state: AgentState, **kwargs) -> AgentState:
+async def data_analysis_node(state: AgentState, deps: AgentDeps) -> AgentState:
     query = state.get("query", "")
-    generation_client = kwargs.get("generation_client")
+    generation_client = deps.generation_client
 
     path = resolve_user_file(state)
     if not path:

@@ -1,14 +1,14 @@
 import os
 import logging
 import asyncio
-from models.agent_state import AgentState
-from controllers.formatter import ResponseFormatter
+from agent.deps import AgentDeps
+from agent.state import AgentState
 
 logger = logging.getLogger('uvicorn.error')
 
-async def web_search_node(state: AgentState, **kwargs) -> AgentState:
+async def web_search_node(state: AgentState, deps: AgentDeps) -> AgentState:
     """Execute a web search using Google Custom Search API or fallback to DDGS."""
-    generation_client = kwargs.get("generation_client")
+    generation_client = deps.generation_client
     query = state["query"]
     
     api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
