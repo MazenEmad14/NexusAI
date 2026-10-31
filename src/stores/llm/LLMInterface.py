@@ -30,8 +30,9 @@ class LLMInterface(ABC):
 
     @abstractmethod
     def generate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
-                      temperature: float = None):
-        pass
+                      temperature: float = None, json_mode: bool = False):
+        """json_mode asks the provider to return a JSON object where it supports that (OpenAI, Groq);
+        others ignore it, so callers must still validate the reply (helpers/llm_json.py)."""
 
     @abstractmethod
     def embed_text(self, text: str, document_type: str = None):
@@ -47,8 +48,10 @@ class LLMInterface(ABC):
 
     # ── async API ────────────────────────────────────────────────────────────
     async def agenerate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
-                             temperature: float = None):
-        return await asyncio.to_thread(self.generate_text, prompt, chat_history, max_output_tokens, temperature)
+                             temperature: float = None, json_mode: bool = False):
+        # json_mode is passed only when set, so providers written before it existed keep working.
+        extra = {"json_mode": True} if json_mode else {}
+        return await asyncio.to_thread(self.generate_text, prompt, chat_history, max_output_tokens, temperature, **extra)
 
     async def aembed_text(self, text: str, document_type: str = None):
         return await asyncio.to_thread(self.embed_text, text, document_type)

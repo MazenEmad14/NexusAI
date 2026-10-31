@@ -44,7 +44,7 @@ class GeminiProvider(LLMInterface):
         return messages
 
     def generate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
-                      temperature: float = None) -> str:
+                      temperature: float = None, json_mode: bool = False) -> str:
         if not self.api_key:
             self.logger.error("Gemini API key is not set")
             return None
@@ -55,7 +55,7 @@ class GeminiProvider(LLMInterface):
             return None
 
     async def agenerate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
-                             temperature: float = None) -> str:
+                             temperature: float = None, json_mode: bool = False) -> str:
         if not self.api_key:
             self.logger.error("Gemini API key is not set")
             return None

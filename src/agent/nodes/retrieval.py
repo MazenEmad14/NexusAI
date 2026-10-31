@@ -2,6 +2,8 @@
 
 import logging
 from agent.deps import AgentDeps
+from helpers.exceptions import LLMOutputError
+from helpers.llm_json import llm_json
 from agent.google_clients import calendar_for_request
 from agent.state import AgentState
 from controllers.NLPController import NLPController
@@ -12,7 +14,6 @@ from services.retrieval import KBAnswer
 from services.retrieval import KB_ANSWER_PROMPT
 from services.retrieval import choose_sources
 from services.retrieval import detect_priority
-from services.retrieval import parse_kb_answer
 from services.retrieval import rerank_results
 import asyncio
 
@@ -157,18 +158,19 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
     if generation_client:
         context_text = "\n\n".join(item.get("text", "") for item in ranked_results)
         try:
-            raw = await generation_client.agenerate_text(
-                prompt=KB_ANSWER_PROMPT.format(context=context_text, question=state["query"]),
+            answer = await llm_json(
+                generation_client,
+                KB_ANSWER_PROMPT.format(context=context_text, question=state["query"]),
+                KBAnswer,
                 chat_history=state.get("chat_history", []),
                 max_output_tokens=400,
                 temperature=0.2,
+                json_mode=True,
             )
-            parsed = parse_kb_answer(raw)
-            if parsed is not None:
-                answer = parsed
-            elif raw and raw.strip():
-                # Not valid JSON: use the text as the answer rather than dropping it.
-                answer = KBAnswer(found=True, answer=raw.strip())
+        except LLMOutputError as exc:
+            # Not usable JSON even after a retry: use the text as the answer rather than dropping it.
+            if exc.raw.strip():
+                answer = KBAnswer(found=True, answer=exc.raw.strip())
         except Exception as exc:
             logger.error(f"LLM answer generation failed: {exc}")
 

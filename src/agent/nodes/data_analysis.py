@@ -9,12 +9,13 @@ import asyncio
 import json
 import logging
 import os
-import re
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import pandas as pd
+from pydantic import BaseModel, ConfigDict
 
 from controllers.ProjectController import ProjectController
+from helpers.llm_json import llm_json
 from helpers.project_scope import scoped_project_id
 from agent.deps import AgentDeps
 from agent.state import AgentState
@@ -25,6 +26,16 @@ ALLOWED_OPS = {"aggregate", "top_n", "correlation", "describe"}
 ALLOWED_AGGS = {"sum", "mean", "median", "min", "max", "count"}
 ALLOWED_CHARTS = {"bar", "line", "pie", "scatter"}
 MAX_ROWS_RETURNED = 50
+
+
+class AnalysisPlan(BaseModel):
+    """The model's choice of analysis. The other fields (column, agg, ...) depend on `op` and are
+    checked against the real table when the plan runs."""
+
+    model_config = ConfigDict(extra="allow")
+    op: Literal["aggregate", "top_n", "correlation", "describe"]
+
+
 MAX_CHART_POINTS = 50
 READABLE_EXTENSIONS = {".csv", ".xls", ".xlsx"}
 
@@ -82,17 +93,6 @@ def _load_dataframe(path: str) -> pd.DataFrame:
     if path.lower().endswith(".csv"):
         return pd.read_csv(path)
     return pd.read_excel(path)
-
-
-def _parse_plan(text: str) -> Optional[dict]:
-    match = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not match:
-        return None
-    try:
-        plan = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
-    return plan if isinstance(plan, dict) else None
 
 
 def _column(df: pd.DataFrame, name: Any) -> str:
@@ -196,13 +196,11 @@ async def data_analysis_node(state: AgentState, deps: AgentDeps) -> AgentState:
         query=query,
     )
     try:
-        plan_text = await generation_client.agenerate_text(
-            prompt=plan_prompt, chat_history=[], max_output_tokens=300, temperature=0.0,
+        plan = await llm_json(
+            generation_client, plan_prompt, AnalysisPlan,
+            chat_history=[], max_output_tokens=300, temperature=0.0, json_mode=True,
         )
-        plan = _parse_plan(plan_text)
-        if plan is None:
-            raise ValueError("The model did not return a valid analysis plan")
-        table, chart, x_key = await asyncio.to_thread(_execute_plan, df, plan)
+        table, chart, x_key = await asyncio.to_thread(_execute_plan, df, plan.model_dump())
     except Exception as exc:
         logger.warning(f"Data analysis plan failed: {exc}")
         state["result"] = "I couldn't work out how to analyse that. Try rephrasing the question with the column names."

@@ -1,9 +1,10 @@
 import asyncio
-import json
 import logging
-import re
 
+from controllers.llm_schemas import UrgentVerdict
 from helpers.event_bus import publish
+from helpers.exceptions import LLMOutputError
+from helpers.llm_json import llm_json
 from models.UserModel import UserModel
 from stores.gmail.GmailService import GmailService
 
@@ -83,23 +84,22 @@ async def _evaluate_user(services, user: dict):
         sender = email.get("sender") or email.get("from", "Unknown")
         emails_text += f"Email {i+1}:\nSubject: {email.get('subject', '')}\nSnippet: {email.get('snippet', '')}\nFrom: {sender}\n\n"
 
-    content = await generation_client.agenerate_text(prompt=PROMPT_TEMPLATE.format(emails_text=emails_text),
-        chat_history=[],
-        max_output_tokens=500,
-        temperature=0.1,
-    )
-    if not content:
-        return
-
-    match = re.search(r"\{.*\}", content, re.DOTALL)
     try:
-        result = json.loads(match.group(0) if match else content)
-    except json.JSONDecodeError:
-        logger.error("Failed to parse proactive agent JSON")
+        verdict = await llm_json(
+            generation_client,
+            PROMPT_TEMPLATE.format(emails_text=emails_text),
+            UrgentVerdict,
+            chat_history=[],
+            max_output_tokens=500,
+            temperature=0.1,
+            json_mode=True,
+        )
+    except LLMOutputError as exc:
+        logger.error(f"Proactive agent reply unusable: {exc}")
         return
 
-    if isinstance(result, dict) and result.get("is_urgent") and result.get("message"):
-        await publish(user_id, result["message"])
+    if verdict.is_urgent and verdict.message:
+        await publish(user_id, verdict.message)
         logger.info(f"Proactive message queued for user {user_id}")
 
 

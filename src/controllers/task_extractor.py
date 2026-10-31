@@ -1,5 +1,6 @@
+from helpers.exceptions import LLMOutputError
+from helpers.llm_json import llm_json_sync
 from stores.llm.LLMInterface import LLMInterface
-import json
 import logging
 import re
 from datetime import datetime, timedelta
@@ -90,34 +91,24 @@ Example:
                 )
             ]
 
-            response = self.generation_client.generate_text(
-                prompt=f"Text to extract from:\n{text}",
+            reply = llm_json_sync(
+                self.generation_client,
+                f"Text to extract from:\n<text>\n{text}\n</text>",
+                list[dict] | dict,
                 chat_history=chat_history,
                 max_output_tokens=300,
-                temperature=0.0
+                temperature=0.0,
             )
-
-            if not response:
-                return []
-
-            response_text = response.strip()
-            
-            # Robust JSON array extraction
-            start_idx = response_text.find('[')
-            end_idx = response_text.rfind(']')
-            
-            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                json_str = response_text[start_idx:end_idx+1]
-                tasks = json.loads(json_str)
-                if isinstance(tasks, list):
-                    return self._sanitize(tasks)
-                return []
-            else:
-                return []
-
+        except LLMOutputError as exc:
+            logger.error(f"Task extraction reply unusable: {exc}")
+            return []
         except Exception as e:
             logger.error(f"Error extracting tasks: {e}")
             return []
+
+        if isinstance(reply, dict):  # {"tasks": [...]} instead of a bare array
+            reply = next((value for value in reply.values() if isinstance(value, list)), [])
+        return self._sanitize(reply)
 
     @staticmethod
     def _sanitize(tasks: list) -> list[dict]:

@@ -1,10 +1,7 @@
 import asyncio
-import json
-import re
 from datetime import datetime, timezone
-from typing import Optional
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 
 PRIORITY_WEIGHT = {"critical": 4, "high": 3, "medium": 2, "low": 1}
@@ -101,14 +98,3 @@ Question: {question}"""
 class KBAnswer(BaseModel):
     found: bool
     answer: str = ""
-
-
-def parse_kb_answer(raw: Optional[str]) -> Optional[KBAnswer]:
-    """Parse the model's structured answer; None when it is not valid JSON of the expected shape."""
-    match = re.search(r"\{.*\}", raw or "", re.DOTALL)
-    if not match:
-        return None
-    try:
-        return KBAnswer(**json.loads(match.group(0)))
-    except (json.JSONDecodeError, ValidationError, TypeError):
-        return None

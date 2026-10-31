@@ -51,7 +51,7 @@ class CoHereProvider(LLMInterface):
         return response.text
 
     def generate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
-                      temperature: float = None):
+                      temperature: float = None, json_mode: bool = False):
         if not self.generation_model_id:
             self.logger.error("Generation model for CoHere was not set")
             return None
@@ -59,7 +59,7 @@ class CoHereProvider(LLMInterface):
         return self._extract_text(response)
 
     async def agenerate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
-                             temperature: float = None):
+                             temperature: float = None, json_mode: bool = False):
         if not self.generation_model_id:
             self.logger.error("Generation model for CoHere was not set")
             return None

@@ -1,4 +1,7 @@
 from .BaseController import BaseController
+from .llm_schemas import EmailSummary
+from helpers.exceptions import LLMOutputError
+from helpers.llm_json import llm_json_sync
 import logging
 
 logger = logging.getLogger('uvicorn.error')
@@ -61,51 +64,33 @@ Date: {email.get('date', 'Unknown')}
             )
         ]
 
+        fallback = {
+            "sender": email.get('sender', 'Unknown'),
+            "subject": email.get('subject', 'No Subject'),
+            "date": email.get('date', ''),
+            "summary": email.get('snippet', 'Could not summarize'),
+            "action_items": []
+        }
+
         try:
-            response = self.generation_client.generate_text(
-                prompt=f"Summarize this email:\n{email_text}",
+            parsed = llm_json_sync(
+                self.generation_client,
+                f"Summarize this email:\n{email_text}",
+                EmailSummary,
                 chat_history=chat_history,
                 max_output_tokens=300,
-                temperature=0.1
+                temperature=0.1,
+                json_mode=True,
             )
-
-            if not response:
-                return {
-                    "sender": email.get('sender', 'Unknown'),
-                    "subject": email.get('subject', 'No Subject'),
-                    "date": email.get('date', ''),
-                    "summary": email.get('snippet', 'Could not summarize'),
-                    "action_items": []
-                }
-
-            import json
-            response_text = response.strip()
-            if response_text.startswith("```"):
-                response_text = response_text.split("\n", 1)[-1]
-                response_text = response_text.rsplit("```", 1)[0]
-            response_text = response_text.strip()
-
-            raw = json.loads(response_text)
-            if not isinstance(raw, dict):
-                raise ValueError("Summary is not a JSON object")
-            # Keep only the expected fields and types; the model output is derived from untrusted text.
-            items = raw.get("action_items")
-            parsed_data = {
-                "summary": str(raw.get("summary", ""))[:1000],
-                "action_items": [str(i)[:300] for i in items[:10]] if isinstance(items, list) else [],
-                "urgency": raw.get("urgency") if raw.get("urgency") in ("high", "medium", "low") else "medium",
-            }
-            parsed_data["sender"] = email.get('sender', 'Unknown')
-            parsed_data["subject"] = email.get('subject', 'No Subject')
-            parsed_data["date"] = email.get('date', '')
-            return parsed_data
-
+        except LLMOutputError as exc:
+            logger.error(f"Email summary reply unusable: {exc}")
+            return fallback
         except Exception as e:
             logger.error(f"Error summarizing email: {e}")
-            return {
-                "sender": email.get('sender', 'Unknown'),
-                "subject": email.get('subject', 'No Subject'),
-                "date": email.get('date', ''),
-                "summary": email.get('snippet', 'Could not summarize'),
-                "action_items": []
-            }
+            return fallback
+
+        summary = parsed.model_dump()
+        summary["sender"] = fallback["sender"]
+        summary["subject"] = fallback["subject"]
+        summary["date"] = fallback["date"]
+        return summary

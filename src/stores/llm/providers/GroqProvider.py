@@ -31,16 +31,19 @@ class GroqProvider(LLMInterface):
         self.embedding_model_id = model_id
         self.embedding_size = embedding_size
 
-    def _chat_kwargs(self, prompt, chat_history, max_output_tokens, temperature):
+    def _chat_kwargs(self, prompt, chat_history, max_output_tokens, temperature, json_mode=False):
         max_output_tokens, temperature = self._generation_params(max_output_tokens, temperature)
         messages = list(chat_history) if chat_history else []
         messages.append(self.construct_prompt(prompt=prompt, role=GroqEnums.USER.value))
-        return {
+        kwargs = {
             "model": self.generation_model_id,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_output_tokens,
         }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        return kwargs
 
     def _extract_text(self, response):
         if not response or not response.choices or not response.choices[0].message or not response.choices[0].message.content:
@@ -49,22 +52,22 @@ class GroqProvider(LLMInterface):
         return response.choices[0].message.content
 
     def generate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
-                      temperature: float = None):
+                      temperature: float = None, json_mode: bool = False):
         if not self.generation_model_id:
             self.logger.error("Generation model for Groq was not set")
             return None
         response = self.client.chat.completions.create(
-            **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature)
+            **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
         )
         return self._extract_text(response)
 
     async def agenerate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
-                             temperature: float = None):
+                             temperature: float = None, json_mode: bool = False):
         if not self.generation_model_id:
             self.logger.error("Generation model for Groq was not set")
             return None
         response = await self.async_client.chat.completions.create(
-            **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature)
+            **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
         )
         return self._extract_text(response)
 
