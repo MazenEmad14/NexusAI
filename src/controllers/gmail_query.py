@@ -1,10 +1,11 @@
 """Turn a natural-language request into a validated Gmail search (query + result count)."""
-import json
 import logging
-import re
 from typing import Optional
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, field_validator
+
+from helpers.exceptions import LLMOutputError
+from helpers.llm_json import llm_json, parse_llm_json
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -59,26 +60,11 @@ class GmailSearchPlan(BaseModel):
 
 
 def parse_gmail_plan(raw_text: Optional[str]) -> GmailSearchPlan:
-    """Parse model output into a plan. Falls back to field-by-field regex for malformed JSON,
-    and to 'latest emails, default count' when nothing usable is found."""
-    text = (raw_text or "").strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            data = json.loads(match.group(0))
-            if isinstance(data, dict):
-                return GmailSearchPlan(**{k: data[k] for k in ("query", "max_results") if k in data})
-        except (json.JSONDecodeError, ValidationError, TypeError):
-            pass
-
-    plan = {}
-    q_match = re.search(r'"query"\s*:\s*"([^"\n]*)"', text)
-    if q_match:
-        plan["query"] = q_match.group(1)
-    m_match = re.search(r'"max_results"\s*:\s*(\d+)', text)
-    if m_match:
-        plan["max_results"] = m_match.group(1)
-    return GmailSearchPlan(**plan)
+    """Parse a model reply into a plan; 'latest emails, default count' if nothing usable is in it."""
+    try:
+        return parse_llm_json(raw_text, GmailSearchPlan)
+    except LLMOutputError:
+        return GmailSearchPlan()
 
 
 async def build_gmail_query(generation_client, user_query: str, chat_history: list = None) -> GmailSearchPlan:
@@ -86,15 +72,20 @@ async def build_gmail_query(generation_client, user_query: str, chat_history: li
     if generation_client is None:
         return GmailSearchPlan()
     try:
-        response = await generation_client.agenerate_text(
-            prompt=PROMPT.format(user_query=user_query.replace('"', "'")),
+        plan = await llm_json(
+            generation_client,
+            PROMPT.format(user_query=user_query.replace('"', "'")),
+            GmailSearchPlan,
             chat_history=chat_history or [],
             max_output_tokens=150,
             temperature=0.0,
+            json_mode=True,
         )
+    except LLMOutputError as exc:
+        logger.warning(f"Gmail query reply unusable ({exc}); using the latest emails")
+        return GmailSearchPlan()
     except Exception as exc:
         logger.warning(f"Failed to generate Gmail query: {exc}")
         return GmailSearchPlan()
-    plan = parse_gmail_plan(response)
     logger.info(f"Gmail search plan: query={plan.query!r} max_results={plan.max_results}")
     return plan

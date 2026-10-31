@@ -17,7 +17,9 @@ from agent.nodes import gmail as gmail_node
 from agent.nodes import retrieval as retrieval_node
 from controllers.gmail_query import GmailSearchPlan, build_gmail_query, parse_gmail_plan
 from controllers.task_extractor import parse_deadline
-from services.retrieval import choose_sources, parse_kb_answer
+from helpers.exceptions import LLMOutputError
+from helpers.llm_json import parse_llm_json
+from services.retrieval import KBAnswer, choose_sources
 
 
 # ── 2.5 Gmail query plan ─────────────────────────────────────────────────────
@@ -79,11 +81,12 @@ def test_sources_are_chosen_from_the_question_not_fanned_out():
 
 
 def test_structured_kb_answer_parsing():
-    found = parse_kb_answer('{"found": true, "answer": "Net 30 days."}')
+    found = parse_llm_json('{"found": true, "answer": "Net 30 days."}', KBAnswer)
     assert found.found and found.answer == "Net 30 days."
-    assert parse_kb_answer('{"found": false, "answer": ""}').found is False
-    assert parse_kb_answer("__NO_RELEVANT_CONTEXT__") is None
-    assert parse_kb_answer('{"answer": "missing found flag"}') is None
+    assert parse_llm_json('{"found": false, "answer": ""}', KBAnswer).found is False
+    for unusable in ("__NO_RELEVANT_CONTEXT__", '{"answer": "missing found flag"}'):
+        with pytest.raises(LLMOutputError):
+            parse_llm_json(unusable, KBAnswer)
 
 
 class FakeNLP:

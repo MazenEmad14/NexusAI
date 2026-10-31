@@ -1,5 +1,7 @@
 from .BaseController import BaseController
-import json
+from .llm_schemas import Classification, EmailDetails, FileDetails, MeetingDetails, ReminderDetails
+from helpers.exceptions import LLMOutputError
+from helpers.llm_json import llm_json_sync
 import logging
 
 logger = logging.getLogger('uvicorn.error')
@@ -197,91 +199,46 @@ RESPOND WITH JSON ONLY! NO TEXT!"""
                 )
             ] + prior_history_messages
 
-            response = self.generation_client.generate_text(
-                prompt=f"Classify this query: \"{query}\"",
-                chat_history=messages,
-                max_output_tokens=100,
-                temperature=0.0
-            )
-            logger.info(f"Raw classifier LLM output: {response}")
-
-            if not response:
-                logger.error("Empty response from LLM classifier")
-                return {"request_type": "retrieval", "action_type": "", "priority": self._detect_priority(query)}
-
-            # First try to parse as JSON
             try:
-                # Find the first '{' and last '}' to handle potential markdown wrappers
-                start_idx = response.find('{')
-                end_idx = response.rfind('}')
-                if start_idx != -1 and end_idx != -1:
-                    json_str = response[start_idx:end_idx+1]
-                    data = json.loads(json_str)
-                    
-                    req_type = data.get("request_type", data.get("category", "retrieval")).lower()
-                    act_type = data.get("action_type", data.get("subcategory", data.get("type", "")))
-                    if act_type is None: act_type = ""
-                    act_type = str(act_type).lower()
-                    
-                    # If LLM didn't provide action_type explicitly, search all JSON values
-                    if act_type not in ["summary", "send_email", "gmail", "calendar", "reminder", "data_analysis"]:
-                        all_values = " ".join([str(v) for v in data.values()]).lower()
-                        if "send_email" in all_values: act_type = "send_email"
-                        elif "calendar" in all_values: act_type = "calendar"
-                        elif "gmail" in all_values: act_type = "gmail"
-                        elif "data_analysis" in all_values: act_type = "data_analysis"
-                        elif "reminder" in all_values: act_type = "reminder"
-                        elif "summary" in all_values and "action + summary" in response.lower(): act_type = "summary"
-                        else: act_type = ""
-                        
-                    if act_type in ["summary", "send_email", "gmail", "calendar", "reminder", "data_analysis"]:
-                        req_type = "action"
-                            
-                    if req_type not in ["action", "retrieval", "web_search", "conversational"]:
-                        if "web_search" in response.lower():
-                            req_type = "web_search"
-                        elif "conversational" in response.lower():
-                            req_type = "conversational"
-                        else:
-                            req_type = "retrieval"
-                    
-                    priority = data.get("priority", "medium").lower()
-                    if priority not in ["low", "medium", "high", "critical"]:
-                        priority = self._detect_priority(query)
-                        
-                    if act_type != "" or req_type in ["web_search", "action", "retrieval", "conversational"]:
-                        return {
-                            "request_type": req_type,
-                            "action_type": act_type,
-                            "priority": priority
-                        }
-            except Exception as e:
-                logger.warning(f"Failed to parse LLM JSON: {e}")
+                result = llm_json_sync(
+                    self.generation_client,
+                    f"Classify this query: \"{query}\"",
+                    Classification,
+                    chat_history=messages,
+                    max_output_tokens=100,
+                    temperature=0.0,
+                    json_mode=True,
+                )
+            except LLMOutputError as exc:
+                # The model answered, but never with usable JSON: look for the keywords in what it said.
+                logger.warning(f"Classifier reply unusable ({exc}); matching keywords in it")
+                return self._classify_from_text(exc.raw, query)
 
-            # Fallback robust matching (Ordered by specificity)
-            response_text = response.lower()
-            if "send_email" in response_text:
-                return {"request_type": "action", "action_type": "send_email", "priority": self._detect_priority(query)}
-            elif "calendar" in response_text:
-                return {"request_type": "action", "action_type": "calendar", "priority": self._detect_priority(query)}
-            elif "gmail" in response_text:
-                return {"request_type": "action", "action_type": "gmail", "priority": self._detect_priority(query)}
-            elif "data_analysis" in response_text:
-                return {"request_type": "action", "action_type": "data_analysis", "priority": self._detect_priority(query)}
-            elif "reminder" in response_text:
-                return {"request_type": "action", "action_type": "reminder", "priority": self._detect_priority(query)}
-            elif "action + summary" in response_text or '"action_type": "summary"' in response_text:
-                return {"request_type": "action", "action_type": "summary", "priority": self._detect_priority(query)}
-            elif "web_search" in response_text:
-                return {"request_type": "web_search", "action_type": "", "priority": self._detect_priority(query)}
-            elif "conversational" in response_text:
-                return {"request_type": "conversational", "action_type": "", "priority": self._detect_priority(query)}
-            else:
-                return {"request_type": "retrieval", "action_type": "", "priority": self._detect_priority(query)}
+            logger.info(f"Classified: {result.request_type} / {result.action_type}")
+            return {
+                "request_type": result.request_type,
+                "action_type": result.action_type,
+                "priority": result.priority or self._detect_priority(query),
+            }
 
         except Exception as e:
             logger.error(f"Error in query classification: {e}")
             return {"request_type": "retrieval", "action_type": "", "priority": self._detect_priority(query)}
+
+    def _classify_from_text(self, raw: str, query: str) -> dict:
+        """Last resort when the model's reply held no usable JSON: look for the category names in it."""
+        text = (raw or "").lower()
+        priority = self._detect_priority(query)
+        for action_type in ("send_email", "calendar", "gmail", "data_analysis", "reminder"):
+            if action_type in text:
+                return {"request_type": "action", "action_type": action_type, "priority": priority}
+        if "action + summary" in text or '"action_type": "summary"' in text:
+            return {"request_type": "action", "action_type": "summary", "priority": priority}
+        if "web_search" in text:
+            return {"request_type": "web_search", "action_type": "", "priority": priority}
+        if "conversational" in text:
+            return {"request_type": "conversational", "action_type": "", "priority": priority}
+        return {"request_type": "retrieval", "action_type": "", "priority": priority}
 
     def _detect_priority(self, text: str) -> str:
         from services.retrieval import detect_priority
@@ -298,7 +255,7 @@ RESPOND WITH JSON ONLY! NO TEXT!"""
         elif action_type == "calendar":
             return self._extract_meeting_details(query, chat_history, timezone_name)
         elif action_type == "reminder":
-            return self._extract_reminder_details(query, chat_history)
+            return self._extract_reminder_details(query, chat_history, timezone_name)
         elif action_type == "data_analysis":
             return self._extract_data_analysis_details(query, chat_history, available_files)
         return {}
@@ -317,7 +274,7 @@ RULES:
 
 If any field is unclear, use a reasonable default."""
 
-        return self._extract_with_llm(query, system_prompt, chat_history)
+        return self._extract_with_llm(query, system_prompt, chat_history, EmailDetails)
 
     def _extract_meeting_details(self, query: str, chat_history: list = None, timezone_name: str = None) -> dict:
         from helpers.timezones import local_now, resolve_timezone
@@ -348,12 +305,13 @@ Return ONLY a valid JSON object:
 Rules:
 - attendees: if a full email address is given, keep it as-is (don't reduce "ahmed@company.com" to "ahmed"). If only a name is given, use the name.
 - If a field is completely unknown or not specified, use null instead of guessing a default (except duration_minutes, which defaults to 60).
-- NEVER include inline comments or explanations in the JSON output (e.g. do NOT write `"title": "ميتنج" ("meeting" in Arabic)`). Output raw valid JSON only.
 """
 
-        return self._extract_with_llm(query, system_prompt, chat_history)
+        return self._extract_with_llm(query, system_prompt, chat_history, MeetingDetails)
 
-    def _extract_reminder_details(self, query: str, chat_history: list = None) -> dict:
+    def _extract_reminder_details(self, query: str, chat_history: list = None, timezone_name: str = None) -> dict:
+        from helpers.timezones import local_now, resolve_timezone
+        today = local_now(timezone_name)
         system_prompt = """You are a reminder-extraction assistant. Extract reminder details from the user's latest message, resolving any references (e.g. "that meeting", "same time as before") using the conversation history provided.
 
 Today's date is {current_date} ({current_weekday}). Use this to resolve relative dates like "tomorrow", "next Friday", or "in 3 days".
@@ -378,9 +336,12 @@ Example:
 User: "Remind me to submit the report by tomorrow morning, it's pretty important"
 Today: 2026-07-08
 Output: {{"task": "Submit the report", "date": "2026-07-09", "time": "09:00", "priority": "high", "notes": ""}}
-"""
+""".format(
+            current_date=f"{today.strftime('%Y-%m-%d')}, time zone {resolve_timezone(timezone_name).key}",
+            current_weekday=today.strftime("%A"),
+        )
 
-        return self._extract_with_llm(query, system_prompt, chat_history)
+        return self._extract_with_llm(query, system_prompt, chat_history, ReminderDetails)
 
     def _extract_data_analysis_details(self, query: str, chat_history: list = None, available_files: str = "") -> dict:
         system_prompt = f"""You are a data analyst assistant. The user wants to analyze a file.
@@ -393,64 +354,37 @@ Return ONLY a valid JSON object with this exact schema:
   "file_path": "the absolute file path from the list above, or empty string if no matching file exists"
 }}
 """
-        return self._extract_with_llm(query, system_prompt, chat_history)
+        return self._extract_with_llm(query, system_prompt, chat_history, FileDetails)
 
-    def _extract_with_llm(self, query: str, system_prompt: str, chat_history: list = None) -> dict:
+    def _extract_with_llm(self, query: str, system_prompt: str, chat_history: list = None, schema=None) -> dict:
+        """Ask for the details as JSON and return them as a dict ({} if the model never gave usable JSON)."""
         messages = [
             self.generation_client.construct_prompt(
                 prompt=system_prompt,
                 role=self.generation_client.enums.SYSTEM.value,
             )
         ]
-        
+
         if chat_history:
             for turn in chat_history[:-1]:
                 role = self.generation_client.enums.USER.value if turn["role"] == "user" else self.generation_client.enums.ASSISTANT.value
                 messages.append(self.generation_client.construct_prompt(prompt=turn["content"], role=role))
 
         try:
-            response = self.generation_client.generate_text(
-                prompt=f"User request: \"{query}\"",
+            details = llm_json_sync(
+                self.generation_client,
+                f"User request: \"{query}\"",
+                schema or dict,
                 chat_history=messages,
                 max_output_tokens=400,
-                temperature=0.0
+                temperature=0.0,
+                json_mode=True,
             )
-
-            if not response:
-                return {}
-
-            response_text = response.strip()
-            logger.info(f"[extract_with_llm] Raw LLM response: {repr(response_text[:300])}")
-
-            # Extract JSON block between the first '{' and the last '}'
-            start_idx = response_text.find('{')
-            end_idx = response_text.rfind('}')
-
-            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                json_str = response_text[start_idx:end_idx+1]
-
-                try:
-                    # strict=False allows unescaped control characters (like \n, \t) inside strings natively
-                    return json.loads(json_str, strict=False)
-                except json.JSONDecodeError:
-                    # Fallback: some models return Python-style dicts with single quotes.
-                    # ast.literal_eval handles these safely (no code execution).
-                    import ast
-                    try:
-                        result = ast.literal_eval(json_str)
-                        if isinstance(result, dict):
-                            logger.info("[extract_with_llm] Recovered via ast.literal_eval fallback")
-                            return result
-                    except Exception as e:
-                        logger.error("Error parsing classifier JSON fallback", exc_info=True)
-                        pass
-                    logger.error(f"[extract_with_llm] JSON parse failed. json_str={repr(json_str[:200])}")
-                    return {}
-            else:
-                logger.error(f"[extract_with_llm] No JSON object found in response: {repr(response_text[:200])}")
-                return {}
-
-        except Exception as e:
-            logger.error(f"Error extracting action details: {e}")
+        except LLMOutputError as exc:
+            logger.error(f"[extract_with_llm] No usable JSON in the model's reply: {exc}")
+            return {}
+        except Exception as exc:
+            logger.error(f"Error extracting action details: {exc}")
             return {}
 
+        return details.model_dump() if hasattr(details, "model_dump") else details
