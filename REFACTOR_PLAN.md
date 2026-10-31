@@ -213,6 +213,13 @@ Known remaining issue related to 2.2: checkpoints store the full graph state, wh
 
 ---
 
+### P2 status
+
+| Item | Status |
+|------|--------|
+| 3.1 Split `agent_graph.py` | **Done.** The 846-line module is now the `agent/` package: `graph.py` (wiring only), `routing.py`, `state.py`, `history.py`, `google_clients.py`, `deps.py`, and `nodes/` with one module per kind of step (`intake`, `retrieval`, `gmail`, `actions`, `summary`, `output`, `conversational`, `data_analysis`, `web`). The three node files that lived in `controllers/` moved in with `git mv`, so their history is kept. Behaviour is unchanged: all 155 existing tests pass after only their import paths were updated. Prompts are still inside the node modules; moving them out is 3.3/3.4. |
+| 3.2 Dependency injection (agent) | **Done for the agent.** The thirteen identical wrapper functions and the `**kwargs` plumbing are replaced by a typed `AgentDeps` dataclass that each node receives as `deps` (`partial(node, deps=deps)` in the graph). A misspelt service name is now an error at construction or an `AttributeError`, not a silent `None`. The app-level half (`hasattr(request.app, ...)`) was done under 2.16. New `tests/test_agent_graph_e2e.py` runs the real compiled graph end to end with a fake model (greeting, approval pause and resume, no Google account, daily summary), which nothing tested before. |
+
 ## 4. P3 — Cleanup
 
 - Repo hygiene: `src/test_*.py` scripts (not pytest tests; some hit live APIs) sit next to the app; root has untracked `dummy.csv`, `test_*.py`, `BACKEND_REVIEW.md`; `backup_script.py`, `check_mongo.py` in root; `.docx/.pptx` binaries in git; `src/assets/mini-rag-app.postman_collection.json` is from the course template. Move scripts to `scripts/`, delete dead ones, add a real `tests/` with `pytest` + `httpx.AsyncClient` + `mongomock-motor`.

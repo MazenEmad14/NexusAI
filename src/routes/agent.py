@@ -7,7 +7,7 @@ import uuid
 import json
 
 from .schemes.agent import ChatRequest, ChatResponse, ResumeRequest, TTSRequest
-from controllers.agent_graph import build_agent_graph, create_initial_state
+from agent import create_initial_state
 from models.enums.ResponseEnums import ResponseSignal
 from fastapi.responses import StreamingResponse
 import io

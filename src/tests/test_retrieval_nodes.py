@@ -12,7 +12,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from controllers import agent_graph
+from agent import AgentDeps, build_agent_graph, routing
+from agent.nodes import gmail as gmail_node
+from agent.nodes import retrieval as retrieval_node
 from controllers.gmail_query import GmailSearchPlan, build_gmail_query, parse_gmail_plan
 from controllers.task_extractor import parse_deadline
 from services.retrieval import choose_sources, parse_kb_answer
@@ -100,16 +102,16 @@ def _kb_state():
 
 def _run_kb(monkeypatch, generation_client, results):
     FakeNLP.results = results
-    monkeypatch.setattr(agent_graph, "NLPController", FakeNLP)
+    monkeypatch.setattr(retrieval_node, "NLPController", FakeNLP)
 
     def forbidden(*a, **k):
         raise AssertionError("Gmail/Calendar must not be touched for a knowledge-base question")
 
-    monkeypatch.setattr(agent_graph, "_gmail_for_state", forbidden)
-    monkeypatch.setattr(agent_graph, "_calendar_for_state", forbidden)
-    return asyncio.run(agent_graph.search_knowledge_base_node(
-        _kb_state(), vectordb_client=object(), embedding_client=object(),
-        generation_client=generation_client, template_parser=None, db_client=None,
+    monkeypatch.setattr(gmail_node, "gmail_for_request", forbidden)
+    monkeypatch.setattr(retrieval_node, "calendar_for_request", forbidden)
+    return asyncio.run(retrieval_node.search_knowledge_base_node(
+        _kb_state(),
+        AgentDeps(vectordb_client=object(), embedding_client=object(), generation_client=generation_client),
     ))
 
 
@@ -158,12 +160,12 @@ def test_no_search_results_skip_the_llm_entirely(monkeypatch):
 
 
 def test_graph_has_no_retrieval_to_gmail_to_web_cascade():
-    edges = agent_graph.build_agent_graph().get_graph().edges
+    edges = build_agent_graph().get_graph().edges
     pairs = {(e.source, e.target) for e in edges}
     assert ("search_knowledge_base", "format_output") in pairs
     assert ("search_knowledge_base", "search_gmail") not in pairs
     assert ("search_gmail", "web_search") not in pairs
-    assert not hasattr(agent_graph, "route_kb_results") and not hasattr(agent_graph, "route_gmail_results")
+    assert not hasattr(routing, "route_kb_results") and not hasattr(routing, "route_gmail_results")
 
 
 # ── 2.5 Gmail node ───────────────────────────────────────────────────────────
@@ -205,10 +207,10 @@ class GmailLLM:
 
 def test_gmail_node_honours_the_requested_count_and_query(monkeypatch):
     gmail = FakeGmail()
-    monkeypatch.setattr(agent_graph, "_gmail_for_state", lambda state=None: gmail)
+    monkeypatch.setattr(gmail_node, "gmail_for_request", lambda state=None: gmail)
     state = {"query": "last 2 mails from my boss", "user_id": "u1", "project_id": "default", "metadata": {}, "chat_history": []}
 
-    result = asyncio.run(agent_graph.search_gmail_node(state, generation_client=GmailLLM(), db_client=None))
+    result = asyncio.run(gmail_node.search_gmail_node(state, AgentDeps(generation_client=GmailLLM(), db_client=None)))
 
     assert gmail.calls == [("from:boss", 2)]
     assert result["status"] == "success" and len(result["emails"]) == 2
@@ -220,9 +222,9 @@ def test_gmail_node_without_a_google_account_asks_to_connect(monkeypatch):
     def no_token(state=None):
         raise GoogleAuthRequiredException("none")
 
-    monkeypatch.setattr(agent_graph, "_gmail_for_state", no_token)
+    monkeypatch.setattr(gmail_node, "gmail_for_request", no_token)
     state = {"query": "mail", "user_id": "u1", "metadata": {}, "chat_history": []}
-    result = asyncio.run(agent_graph.search_gmail_node(state, generation_client=GmailLLM(), db_client=None))
+    result = asyncio.run(gmail_node.search_gmail_node(state, AgentDeps(generation_client=GmailLLM(), db_client=None)))
     assert result["status"] == "error" and "connect your Google account" in result["result"]
 
 
@@ -256,13 +258,13 @@ def _with_db(coro_fn):
 
 @needs_mongo
 def test_repeating_the_same_request_does_not_duplicate_tasks_or_reminders(monkeypatch):
-    monkeypatch.setattr(agent_graph, "_gmail_for_state", lambda state=None: FakeGmail())
+    monkeypatch.setattr(gmail_node, "gmail_for_request", lambda state=None: FakeGmail())
     llm = GmailLLM()
 
     async def scenario(db):
         for _ in range(3):
             state = {"query": "my latest mails", "user_id": "u1", "project_id": "default", "metadata": {}, "chat_history": []}
-            await agent_graph.search_gmail_node(state, generation_client=llm, db_client=db)
+            await gmail_node.search_gmail_node(state, AgentDeps(generation_client=llm, db_client=db))
 
         assert await db.tasks.count_documents({"user_id": "u1"}) == 1
         assert await db.reminders.count_documents({"user_id": "u1"}) == 1
@@ -284,9 +286,9 @@ def test_same_task_from_a_new_email_is_not_duplicated_and_users_stay_separate(mo
         second.search_emails = lambda query, max_results: [{**EMAILS[0], "message_id": "m9"}]
 
         async def run(user, gmail):
-            monkeypatch.setattr(agent_graph, "_gmail_for_state", lambda state=None: gmail)
+            monkeypatch.setattr(gmail_node, "gmail_for_request", lambda state=None: gmail)
             state = {"query": "mails", "user_id": user, "project_id": "default", "metadata": {}, "chat_history": []}
-            await agent_graph.search_gmail_node(state, generation_client=llm, db_client=db)
+            await gmail_node.search_gmail_node(state, AgentDeps(generation_client=llm, db_client=db))
 
         await run("u1", first)
         await run("u1", second)  # new message, same task text
@@ -314,14 +316,14 @@ def test_relative_deadlines_are_resolved_in_the_users_zone(monkeypatch):
         asked_for.append(zone)
         return fixed
 
-    monkeypatch.setattr(agent_graph, "local_now", fake_local_now)
-    monkeypatch.setattr(agent_graph, "_gmail_for_state", lambda state=None: FakeGmail())
+    monkeypatch.setattr(gmail_node, "local_now", fake_local_now)
+    monkeypatch.setattr(gmail_node, "gmail_for_request", lambda state=None: FakeGmail())
     llm = GmailLLM(deadline="tomorrow")
 
     async def scenario(db):
         state = {"query": "mails", "user_id": "u1", "project_id": "default", "metadata": {},
                  "chat_history": [], "user_timezone": "Pacific/Auckland"}
-        await agent_graph.search_gmail_node(state, generation_client=llm, db_client=db)
+        await gmail_node.search_gmail_node(state, AgentDeps(generation_client=llm, db_client=db))
         task = await db.tasks.find_one({"user_id": "u1"})
         reminder = await db.reminders.find_one({"user_id": "u1"})
         assert task["deadline"].date().isoformat() == "2026-06-02"

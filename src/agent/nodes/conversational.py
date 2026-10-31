@@ -11,10 +11,10 @@ It passes the user's message directly to the LLM with a persona prompt and
 returns a short, natural reply.
 """
 
-import asyncio
 import logging
 
-from models.agent_state import AgentState
+from agent.deps import AgentDeps
+from agent.state import AgentState
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -91,7 +91,7 @@ Rules for conversational replies:
 """
 
 
-async def conversational_node(state: AgentState, **kwargs) -> AgentState:
+async def conversational_node(state: AgentState, deps: AgentDeps) -> AgentState:
     """
     LangGraph node: handles casual greetings / chit-chat.
 
@@ -100,12 +100,12 @@ async def conversational_node(state: AgentState, **kwargs) -> AgentState:
 
     Args:
         state (AgentState): The current LangGraph state.
-        **kwargs: Injected shared services (generation_client, etc.).
+        deps: The injected services (generation_client, etc.).
 
     Returns:
         AgentState: Updated state with result, status, and metadata.
     """
-    generation_client = kwargs.get("generation_client")
+    generation_client = deps.generation_client
     query = state["query"]
 
     answer = ""

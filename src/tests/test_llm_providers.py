@@ -208,7 +208,8 @@ def test_cohere_async_embeddings_are_batched():
 
 # ── nodes await the async API ────────────────────────────────────────────────
 def test_data_analysis_node_awaits_agenerate_text(tmp_path, monkeypatch):
-    from controllers import data_analysis_node as dan
+    from agent import AgentDeps
+    from agent.nodes import data_analysis as dan
 
     csv_path = tmp_path / "sales.csv"
     csv_path.write_text("Region,Sales\na,10\na,5\nb,3\n")
@@ -224,7 +225,7 @@ def test_data_analysis_node_awaits_agenerate_text(tmp_path, monkeypatch):
             return next(replies)
 
     state = {"query": "sales by region", "metadata": {}}
-    result = asyncio.run(dan.data_analysis_node(state, generation_client=AsyncOnlyClient()))
+    result = asyncio.run(dan.data_analysis_node(state, AgentDeps(generation_client=AsyncOnlyClient())))
 
     assert result["status"] == "success"
     assert result["result"] == "Region a leads with 15."

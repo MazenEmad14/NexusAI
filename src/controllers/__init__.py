@@ -6,4 +6,4 @@ from .NLPController import NLPController
 from .classifier import ClassifierController
 from .email_summarizer import EmailSummarizerController
 from .formatter import ResponseFormatter
-# Note: agent_graph is not a class, so we import it directly where needed.
+# The agent workflow lives in the `agent` package.
