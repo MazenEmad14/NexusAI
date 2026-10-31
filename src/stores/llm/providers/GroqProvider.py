@@ -56,9 +56,12 @@ class GroqProvider(LLMInterface):
         if not self.generation_model_id:
             self.logger.error("Generation model for Groq was not set")
             return None
-        response = self.client.chat.completions.create(
-            **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
-        )
+        try:
+            response = self.client.chat.completions.create(
+                **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
+            )
+        except Exception as exc:
+            raise self._unavailable(exc) from exc
         return self._extract_text(response)
 
     async def agenerate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
@@ -66,9 +69,12 @@ class GroqProvider(LLMInterface):
         if not self.generation_model_id:
             self.logger.error("Generation model for Groq was not set")
             return None
-        response = await self.async_client.chat.completions.create(
-            **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
-        )
+        try:
+            response = await self.async_client.chat.completions.create(
+                **self._chat_kwargs(prompt, chat_history, max_output_tokens, temperature, json_mode)
+            )
+        except Exception as exc:
+            raise self._unavailable(exc) from exc
         return self._extract_text(response)
 
     async def aclose(self):

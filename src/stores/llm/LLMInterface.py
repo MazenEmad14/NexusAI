@@ -59,6 +59,12 @@ class LLMInterface(ABC):
     async def aembed_texts(self, texts: list[str], document_type: str = None):
         return await asyncio.to_thread(self.embed_texts, texts, document_type)
 
+    def _unavailable(self, exc: Exception):
+        """Wrap a provider SDK error as LLMUnavailable (the cause is kept for the logs)."""
+        from helpers.exceptions import LLMUnavailable
+
+        return LLMUnavailable.from_exception(exc, provider=type(self).__name__)
+
     async def aclose(self):
         """Release network resources held by async clients (no-op by default)."""
 

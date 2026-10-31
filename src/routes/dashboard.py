@@ -21,7 +21,7 @@ from pymongo.errors import PyMongoError
 
 from helpers.auth_utils import get_current_user
 from helpers.services import services_of
-from helpers.exceptions import GoogleAuthRequiredException
+from helpers.exceptions import DomainError, GoogleAuthRequiredException
 from models.UserModel import UserModel
 from services.daily_summary import DailySummaryService
 from stores.calendar.CalendarService import CalendarService
@@ -64,6 +64,9 @@ def envelope(success_message: str, failure_message: str):
                 data = await fn(*args, **kwargs)
             except DashboardError as exc:
                 return _error_response(exc.status_code, exc.message)
+            except DomainError as exc:
+                logger.warning(f"{failure_message}: {exc.code}: {exc}")
+                return _error_response(exc.status_code, exc.public_message)
             except PyMongoError:
                 logger.error(failure_message, exc_info=True)
                 return _error_response(status.HTTP_503_SERVICE_UNAVAILABLE, "The database is temporarily unavailable")

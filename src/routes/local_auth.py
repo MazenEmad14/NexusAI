@@ -4,6 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
+from pymongo.errors import PyMongoError
 
 from helpers import auth_utils
 from helpers.services import services_of
@@ -90,10 +91,8 @@ async def signup(request: Request, body: SignUpRequest):
         is_google_connected=False
     )
 
-    success = await user_model.create_user(new_user)
-    if not success:
-        # The unique index also rejects a concurrent sign-up with the same email.
-        raise HTTPException(status_code=409, detail="Email already exists")
+    # Raises EmailAlreadyRegistered (409), also when two sign-ups with the same email race.
+    await user_model.create_user(new_user)
 
     token = auth_utils.create_access_token({"sub": email})
 
@@ -145,7 +144,10 @@ async def signin(request: Request, body: SignInRequest):
 
     # Sync the is_google_connected flag if it drifted
     if user_data.get("is_google_connected") != is_google_connected:
-        await user_model.update_google_auth_status(email, is_google_connected)
+        try:
+            await user_model.update_google_auth_status(email, is_google_connected)
+        except PyMongoError:
+            logger.warning("Could not sync the Google connection flag at sign-in", exc_info=True)  # cosmetic
 
     token = auth_utils.create_access_token({"sub": email})
 

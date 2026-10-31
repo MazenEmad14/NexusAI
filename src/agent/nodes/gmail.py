@@ -2,6 +2,8 @@
 
 import logging
 from agent.deps import AgentDeps
+from agent.errors import fail
+from helpers.exceptions import DomainError, LLMUnavailable
 from agent.google_clients import GOOGLE_CONNECT_MESSAGE
 from agent.google_clients import gmail_for_request
 from agent.state import AgentState
@@ -92,9 +94,15 @@ async def search_gmail_node(state: AgentState, deps: AgentDeps) -> AgentState:
         state["status"] = "error"
         return state
 
-    plan = await build_gmail_query(generation_client, state["query"], state.get("chat_history", []))
+    try:
+        plan = await build_gmail_query(generation_client, state["query"], state.get("chat_history", []))
+    except LLMUnavailable as exc:
+        return fail(state, exc)
     try:
         emails = await asyncio.to_thread(gmail_service.search_emails, query=plan.query, max_results=plan.max_results)
+    except DomainError as exc:  # an expired Google connection and a Gmail outage are told apart
+        logger.error(f"Gmail search failed: {exc}")
+        return fail(state, exc)
     except Exception:
         logger.error("Gmail search failed", exc_info=True)
         state["result"] = ResponseFormatter.format_error("I couldn't reach Gmail right now. Please try again in a moment.")

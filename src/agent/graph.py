@@ -63,6 +63,7 @@ def build_agent_graph(deps: AgentDeps = None, checkpointer=None):
             "data_analysis": "data_analysis",
             "web_search": "web_search",
             "search_gmail": "search_gmail",
+            "format_output": "format_output",
         }
     )
 

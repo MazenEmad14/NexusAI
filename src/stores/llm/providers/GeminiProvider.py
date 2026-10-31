@@ -52,7 +52,7 @@ class GeminiProvider(LLMInterface):
             return self._llm(max_output_tokens, temperature).invoke(self._messages(prompt, chat_history)).content
         except Exception as e:
             self.logger.error(f"Error generating text with Gemini: {e}")
-            return None
+            raise self._unavailable(e) from e
 
     async def agenerate_text(self, prompt: str, chat_history: list = None, max_output_tokens: int = None,
                              temperature: float = None, json_mode: bool = False) -> str:
@@ -64,7 +64,7 @@ class GeminiProvider(LLMInterface):
             return response.content
         except Exception as e:
             self.logger.error(f"Error generating text with Gemini: {e}")
-            return None
+            raise self._unavailable(e) from e
 
     def embed_text(self, text: str, document_type: str = None) -> list:
         if not self.api_key:
@@ -82,7 +82,7 @@ class GeminiProvider(LLMInterface):
             return embeddings.embed_query(processed_text)
         except Exception as e:
             self.logger.error(f"Error embedding text with Gemini: {e}")
-            return None
+            raise self._unavailable(e) from e
 
     def embed_chunk(self, chunk: dict) -> list:
         return self.embed_text(chunk.get("text", ""))
@@ -101,7 +101,7 @@ class GeminiProvider(LLMInterface):
             return embeddings.embed_documents(processed_texts)
         except Exception as e:
             self.logger.error(f"Error embedding texts with Gemini: {e}")
-            return None
+            raise self._unavailable(e) from e
 
     def construct_prompt(self, prompt: str, role: str):
         return {

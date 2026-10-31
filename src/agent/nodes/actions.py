@@ -2,6 +2,8 @@
 
 import logging
 from agent.deps import AgentDeps
+from agent.errors import fail
+from helpers.exceptions import DomainError, LLMUnavailable
 from agent.google_clients import GOOGLE_CONNECT_MESSAGE
 from agent.google_clients import calendar_for_request
 from agent.google_clients import gmail_for_request
@@ -20,13 +22,17 @@ def extract_action_details_node(state: AgentState, deps: AgentDeps) -> AgentStat
     generation_client = deps.generation_client
 
     classifier = ClassifierController(generation_client=generation_client)
-    details = classifier.extract_action_details(
-        query=state["query"],
-        action_type=state["action_type"],
-        chat_history=state.get("chat_history", []),
-        available_files=state.get("metadata", {}).get("available_files", ""),
-        timezone_name=state.get("user_timezone") or None,
-    )
+    try:
+        details = classifier.extract_action_details(
+            query=state["query"],
+            action_type=state["action_type"],
+            chat_history=state.get("chat_history", []),
+            available_files=state.get("metadata", {}).get("available_files", ""),
+            timezone_name=state.get("user_timezone") or None,
+        )
+    except LLMUnavailable as exc:
+        logger.error(f"Cannot extract the action details: {exc}")
+        return fail(state, exc)
     
     # Priority 5 Fix: Ensure action_details are never empty for reminder HITL
     if state["action_type"] == "reminder":
@@ -61,21 +67,19 @@ def send_email_node(state: AgentState, deps: AgentDeps) -> AgentState:
         state["status"] = "error"
         return state
 
-    result = gmail_service.send_email(
-        to=details.get("recipient", ""),
-        subject=details.get("subject", ""),
-        body=details.get("body", "")
-    )
+    try:
+        result = gmail_service.send_email(
+            to=details.get("recipient", ""),
+            subject=details.get("subject", ""),
+            body=details.get("body", "")
+        )
+    except DomainError as exc:  # an expired Google connection and a Gmail outage are told apart
+        return fail(state, exc)
 
-    if result:
-        state["result"] = ResponseFormatter.format_email_sent(result)
-        state["status"] = "success"
-        state["metadata"]["source"] = "gmail_send"
-        state["metadata"]["message_id"] = result.get("message_id", "")
-    else:
-        state["result"] = ResponseFormatter.format_error("Failed to send email")
-        state["status"] = "error"
-
+    state["result"] = ResponseFormatter.format_email_sent(result)
+    state["status"] = "success"
+    state["metadata"]["source"] = "gmail_send"
+    state["metadata"]["message_id"] = result.get("message_id", "")
     return state
 
 
@@ -90,23 +94,21 @@ def create_calendar_event_node(state: AgentState, deps: AgentDeps) -> AgentState
         state["status"] = "error"
         return state
 
-    result = calendar_service.create_event(
-        title=details.get("title", "Meeting"),
-        date=details.get("date", ""),
-        time=details.get("time", "12:00"),
-        attendees=details.get("attendees", []),
-        time_zone=state.get("user_timezone") or None,
-    )
+    try:
+        result = calendar_service.create_event(
+            title=details.get("title", "Meeting"),
+            date=details.get("date", ""),
+            time=details.get("time", "12:00"),
+            attendees=details.get("attendees", []),
+            time_zone=state.get("user_timezone") or None,
+        )
+    except DomainError as exc:
+        return fail(state, exc)
 
-    if result:
-        state["result"] = ResponseFormatter.format_event_created(result)
-        state["status"] = "success"
-        state["metadata"]["source"] = "calendar"
-        state["metadata"]["event_id"] = result.get("event_id", "")
-    else:
-        state["result"] = ResponseFormatter.format_error("Failed to create calendar event")
-        state["status"] = "error"
-
+    state["result"] = ResponseFormatter.format_event_created(result)
+    state["status"] = "success"
+    state["metadata"]["source"] = "calendar"
+    state["metadata"]["event_id"] = result.get("event_id", "")
     return state
 
 

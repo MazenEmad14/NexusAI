@@ -2,7 +2,8 @@
 
 import logging
 from agent.deps import AgentDeps
-from helpers.exceptions import LLMOutputError
+from agent.errors import fail
+from helpers.exceptions import DomainError, ExternalServiceError, LLMOutputError
 from helpers.llm_json import llm_json
 from agent.google_clients import calendar_for_request
 from agent.state import AgentState
@@ -41,6 +42,8 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
     except ValueError:
         project = None
 
+    failed: dict = {}  # source name -> the error, for sources that could not be searched
+
     async def _kb_search() -> list:
         if not (vectordb_client and embedding_client and project):
             return []
@@ -62,6 +65,7 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
                 } for r in results]
         except Exception as exc:
             logger.error(f"KB search failed: {exc}")
+            failed["knowledge_base"] = exc
         return []
 
     async def _task_search() -> list:
@@ -82,15 +86,17 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
             } for task in tasks]
         except Exception as exc:
             logger.error(f"Task search failed: {exc}")
+            failed["tasks"] = exc
         return []
 
     async def _calendar_search() -> list:
         try:
             calendar_service = await asyncio.to_thread(calendar_for_request)
         except GoogleAuthRequiredException:
-            return []
+            return []  # no Google account: there is simply no calendar to search
         except Exception as exc:
             logger.error(f"Calendar client setup failed: {exc}")
+            failed["calendar"] = exc
             return []
         try:
             events = await asyncio.to_thread(
@@ -106,8 +112,11 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
                 "relevance": 0.9,
                 "date": event.get("start"),
             } for event in events]
+        except GoogleAuthRequiredException:
+            return []
         except Exception as exc:
             logger.error(f"Calendar search failed: {exc}")
+            failed["calendar"] = exc
         return []
 
     async def _reminder_search() -> list:
@@ -128,6 +137,7 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
             } for reminder in reminders]
         except Exception as exc:
             logger.error(f"Reminder search failed: {exc}")
+            failed["reminders"] = exc
         return []
 
     searches = {
@@ -142,6 +152,15 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
     aggregated_results = [item for results in results_per_source for item in results]
 
     state["emails"] = []
+    if failed:
+        state["metadata"]["unavailable_sources"] = sorted(failed)
+    if not aggregated_results and failed:
+        # Nothing found AND something could not be searched: "no information found" would be a lie.
+        state["knowledge_results"] = []
+        logger.error(f"Retrieval could not search {sorted(failed)}")
+        reason = next((e for e in failed.values() if isinstance(e, DomainError)),
+                      ExternalServiceError(f"Could not search {sorted(failed)}", service="search"))
+        return fail(state, reason)
     if not aggregated_results:
         state["knowledge_results"] = []
         state["result"] = ResponseFormatter.format_no_results()

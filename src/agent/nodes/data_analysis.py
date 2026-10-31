@@ -18,6 +18,8 @@ from controllers.ProjectController import ProjectController
 from helpers.llm_json import llm_json
 from helpers.project_scope import scoped_project_id
 from agent.deps import AgentDeps
+from agent.errors import fail
+from helpers.exceptions import LLMUnavailable
 from agent.state import AgentState
 
 logger = logging.getLogger("uvicorn.error")
@@ -201,6 +203,9 @@ async def data_analysis_node(state: AgentState, deps: AgentDeps) -> AgentState:
             chat_history=[], max_output_tokens=300, temperature=0.0, json_mode=True,
         )
         table, chart, x_key = await asyncio.to_thread(_execute_plan, df, plan.model_dump())
+    except LLMUnavailable as exc:
+        logger.error(f"Cannot plan the analysis: {exc}")
+        return fail(state, exc)
     except Exception as exc:
         logger.warning(f"Data analysis plan failed: {exc}")
         state["result"] = "I couldn't work out how to analyse that. Try rephrasing the question with the column names."
