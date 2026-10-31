@@ -10,8 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from motor.motor_asyncio import AsyncIOMotorClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 from agent import AgentDeps, build_agent_graph
 from controllers.proactive_agent import evaluate_inbox_and_notify
@@ -60,14 +58,6 @@ async def lifespan(app: FastAPI):
         await ensure_all_indexes(mongo_db)
         await UserModel(mongo_db).normalize_existing_emails()
 
-        # 2. PostgreSQL engine (connects lazily; see REFACTOR_PLAN.md 3.5 about whether it is still needed)
-        db_engine = create_async_engine(
-            f"postgresql+asyncpg://{settings.POSTGRES_USERNAME}:{settings.POSTGRES_PASSWORD}"
-            f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_MAIN_DATABASE}"
-        )
-        stack.push_async_callback(lambda: _close_quietly("the PostgreSQL engine", db_engine.dispose))
-        db_client = sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-
         # 3. LLM clients
         llm_factory = LLMProviderFactory(settings)
         generation_client = llm_factory.create(provider=settings.GENERATION_BACKEND)
@@ -105,8 +95,6 @@ async def lifespan(app: FastAPI):
         services = Services(
             mongo_conn=mongo_conn,
             mongo_db=mongo_db,
-            db_engine=db_engine,
-            db_client=db_client,
             generation_client=generation_client,
             embedding_client=embedding_client,
             vectordb_client=vectordb_client,

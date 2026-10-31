@@ -14,7 +14,6 @@ All external I/O is replaced by session-scoped mocks defined in conftest.py:
   - Gmail API                                        -> MagicMock
   - Google Calendar API                              -> MagicMock
   - MongoDB (Motor)                                  -> AsyncMock
-  - PostgreSQL (SQLAlchemy)                          -> MagicMock
 
 The LangGraph state machine runs its REAL compiled graph (real routing logic).
 Only the external side-effects (LLM calls, API calls) are replaced by mocks.

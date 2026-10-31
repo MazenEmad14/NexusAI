@@ -24,7 +24,6 @@ SRC = Path(__file__).resolve().parents[1]
 # The smallest set of values that makes a valid Settings; tests change one thing at a time.
 VALID = dict(
     APP_NAME="app", APP_VERSION="1", FILE_ALLOWED_TYPES=["text/plain"], FILE_MAX_SIZE=10, FILE_DEFAULT_CHUNK_SIZE=1024,
-    POSTGRES_USERNAME="u", POSTGRES_PASSWORD="p", POSTGRES_HOST="h", POSTGRES_PORT=5432, POSTGRES_MAIN_DATABASE="d",
     GENERATION_BACKEND="GROQ", EMBEDDING_BACKEND="COHERE", VECTOR_DB_BACKEND="QDRANT", VECTOR_DB_PATH="qdrant_db",
     JWT_SECRET_KEY="k" * 40, GENERATION_MODEL_ID="gen", EMBEDDING_MODEL_ID="emb", EMBEDDING_MODEL_SIZE=1024,
     GROQ_API_KEY="g", COHERE_API_KEY="c",
@@ -41,7 +40,7 @@ def test_the_minimal_valid_settings_have_no_problems():
 
 
 @pytest.mark.parametrize("change", [
-    {"FILE_MAX_SIZE": 0}, {"FILE_DEFAULT_CHUNK_SIZE": -1}, {"POSTGRES_PORT": 70000},
+    {"FILE_MAX_SIZE": 0}, {"FILE_DEFAULT_CHUNK_SIZE": -1},
     {"GENERATION_BACKEND": "NOPE"}, {"EMBEDDING_BACKEND": "GROQ"}, {"VECTOR_DB_BACKEND": "PINECONE"},
     {"VECTOR_DB_DISTANCE_METHOD": "manhattan"}, {"MONGODB_URL": "postgres://x"},
     {"DEFAULT_TIMEZONE": "Mars/Olympus"}, {"DAILY_SUMMARY_HOUR": 24}, {"INBOX_CHECK_INTERVAL_MINUTES": 0},

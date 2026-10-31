@@ -88,7 +88,7 @@ def test_startup_builds_everything_with_the_configured_database_and_shutdown_rel
     with TestClient(main.app) as client:
         services = main.app.state.services
         assert isinstance(services, Services)
-        for name in ("mongo_conn", "mongo_db", "db_engine", "db_client", "generation_client", "embedding_client",
+        for name in ("mongo_conn", "mongo_db", "generation_client", "embedding_client",
                      "vectordb_client", "template_parser", "checkpointer", "agent_graph", "notification_engine", "scheduler"):
             assert getattr(services, name) is not None, name
 

@@ -26,12 +26,6 @@ os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 os.environ.setdefault("MONGODB_URL", "mongodb://localhost:27017/")
 os.environ.setdefault("MONGODB_DATABASE", "depi_test")
 
-os.environ.setdefault("POSTGRES_USERNAME", "test_user")
-os.environ.setdefault("POSTGRES_PASSWORD", "test_pass")
-os.environ.setdefault("POSTGRES_HOST", "localhost")
-os.environ.setdefault("POSTGRES_PORT", "5432")
-os.environ.setdefault("POSTGRES_MAIN_DATABASE", "test_db")
-
 # LLM / VectorDB backends — use "openai" so LLMProviderFactory.create() doesn't crash;
 # we will mock the returned client entirely.
 os.environ.setdefault("GENERATION_BACKEND", "openai")
@@ -297,7 +291,6 @@ def patched_app():
     external dependencies replaced by deterministic mocks:
 
       - MongoDB (motor) → AsyncMock
-      - PostgreSQL (SQLAlchemy) → MagicMock
       - LLM provider (OpenAI/Cohere/Gemini…) → _build_mock_llm()
       - Vector DB (Qdrant/Chroma…) → _build_mock_vectordb()
       - GmailService → _build_mock_gmail()
@@ -314,10 +307,6 @@ def patched_app():
     mock_cal    = _build_mock_calendar()
 
     # Patch heavy startup dependencies
-    mock_engine = MagicMock()
-    mock_engine.dispose = AsyncMock()
-
-    mock_session_maker = MagicMock()
     mock_collection = MagicMock()
     mock_collection.insert_one = AsyncMock(return_value=MagicMock(inserted_id="mock_id"))
     mock_collection.update_one = AsyncMock(return_value=True)
@@ -341,10 +330,6 @@ def patched_app():
     with \
         patch("motor.motor_asyncio.AsyncIOMotorClient",
               return_value=mock_mongo_client), \
-        patch("sqlalchemy.ext.asyncio.create_async_engine",
-              return_value=mock_engine), \
-        patch("sqlalchemy.orm.sessionmaker",
-              return_value=mock_session_maker), \
         patch("stores.llm.LLMProviderFactory.LLMProviderFactory.create",
               return_value=mock_llm), \
         patch("stores.vectordb.VectorDBProviderFactory.VectorDBProviderFactory.create",
