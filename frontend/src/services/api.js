@@ -129,14 +129,16 @@ export async function streamChatMessage(query, projectId = 'default', threadId =
  * @param {string} threadId
  * @param {boolean} approve
  * @param {AbortSignal} [signal]
+ * @param {string} resumeToken  the one-time token the server sent with the pending approval
  * @returns {Promise<{response, type, status, thread_id}>}
  */
-export async function resumeAction(threadId, approve, signal) {
+export async function resumeAction(threadId, approve, resumeToken, signal) {
   return request('/api/v1/agent/resume', {
     method: 'POST',
     body: JSON.stringify({
       thread_id: threadId,
       approve,
+      resume_token: resumeToken,
     }),
     signal,
   });
