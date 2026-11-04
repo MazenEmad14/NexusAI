@@ -43,6 +43,11 @@ class GroqProvider(LLMInterface):
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if "gpt-oss" in (self.generation_model_id or ""):
+            # A reasoning model spends the token budget on its hidden reasoning first; with the short limits used
+            # here the answer would come back empty. Low effort leaves room for the answer.
+            kwargs["reasoning_effort"] = "low"
+            kwargs["include_reasoning"] = False
         return kwargs
 
     def _extract_text(self, response):
