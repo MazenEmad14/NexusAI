@@ -236,11 +236,12 @@ def test_groq_reasoning_models_are_asked_for_low_effort_so_the_answer_is_not_emp
     provider = GroqProvider(api_key="x")
     provider.set_generation_model("openai/gpt-oss-20b")
     provider.client = SimpleNamespace(chat=FakeChat())
-    provider.generate_text("hi")
+    provider.generate_text("hi", max_output_tokens=100)
     sent = provider.client.chat.calls[0]
     assert sent["reasoning_effort"] == "low" and sent["include_reasoning"] is False
+    assert sent["max_tokens"] == 100 + 512      # the hidden reasoning is counted in max_tokens
 
     plain = _groq()
     plain.client = SimpleNamespace(chat=FakeChat())
-    plain.generate_text("hi")
-    assert "reasoning_effort" not in plain.client.chat.calls[0]
+    plain.generate_text("hi", max_output_tokens=100)
+    assert "reasoning_effort" not in plain.client.chat.calls[0] and plain.client.chat.calls[0]["max_tokens"] == 100

@@ -129,6 +129,10 @@ RESPOND WITH JSON ONLY! NO TEXT!""")
 
 classify_user = Template(r'''Classify this query: "${query}"''')
 
+classify_user_with_documents = Template(r'''Classify this query: "${query}"
+The user has uploaded these documents to their knowledge base: ${documents}
+If the query could be answered from the content of those documents (a person, project, number or date that may be in them), use "retrieval". Use "web_search" only for clearly general public knowledge.''')
+
 email_system = Template(r"""Extract email details from the user's request. Resolve any pronouns using the conversation history.
 Return ONLY a valid JSON object:
 {"recipient": "email or name", "subject": "subject line", "body": "email body content"}
@@ -146,6 +150,9 @@ meeting_system = Template(r"""Extract meeting/calendar event details from the us
 Resolve any pronouns or references ("it", "tomorrow", "the meeting") using the conversation history.
 
 Current Date and Time: ${now}
+
+The next days (look the date up here: never calculate a weekday yourself):
+${calendar}
 
 Date/time resolution rules:
 - Compute relative dates precisely against the Current Date and Time above (e.g. "next Tuesday", "in two weeks", "end of month").
@@ -172,6 +179,9 @@ Rules:
 reminder_system = Template(r"""You are a reminder-extraction assistant. Extract reminder details from the user's latest message, resolving any references (e.g. "that meeting", "same time as before") using the conversation history provided.
 
 Today's date is ${current_date} (${current_weekday}). Use this to resolve relative dates like "tomorrow", "next Friday", or "in 3 days".
+
+The next days (look the date up here: never calculate a weekday yourself; "next Monday" is the first Monday listed after today):
+${calendar}
 
 Return ONLY a valid JSON object with this exact schema, and nothing else (no markdown, no code fences, no explanation):
 {
