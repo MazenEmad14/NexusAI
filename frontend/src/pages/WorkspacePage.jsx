@@ -115,6 +115,9 @@ function getAgentBadges(type, source) {
   if (source === 'reminder' || type?.includes('reminder')) {
     badges.push({ label: '⏰ Reminder Agent', color: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30' });
   }
+  if (source === 'drive' || source === 'drive_save' || type?.includes('drive')) {
+    badges.push({ label: '📁 Drive Agent', color: 'bg-sky-500/20 text-sky-300 border-sky-500/30' });
+  }
   if (source === 'daily_summary') {
     badges.push({ label: '📊 Summary Agent', color: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' });
   }
@@ -174,12 +177,14 @@ export default function WorkspacePage() {
   const audioChunksRef = useRef([]);
 
   const [googleConnected, setGoogleConnected] = useState(false);
+  // Which Google services the user allowed (Gmail, Calendar, Drive); an older connection has no Drive access.
+  const [googleServices, setGoogleServices] = useState({ gmail: false, calendar: false, drive: false });
 
-  /* ── integrations status (derived from health check) ── */
+  /* ── integrations status (from the Google connection) ── */
   const integrations = [
-    { name: 'Gmail', icon: Mail, connected: googleConnected },
-    { name: 'Calendar', icon: Calendar, connected: googleConnected },
-    { name: 'Drive', icon: HardDrive, connected: false },
+    { name: 'Gmail', icon: Mail, connected: googleConnected && googleServices.gmail },
+    { name: 'Calendar', icon: Calendar, connected: googleConnected && googleServices.calendar },
+    { name: 'Drive', icon: HardDrive, connected: googleConnected && googleServices.drive, needsReconnect: googleConnected && !googleServices.drive },
   ];
 
   /* ── health check on mount ── */
@@ -193,6 +198,7 @@ export default function WorkspacePage() {
         try {
           const gAuth = await checkGoogleAuthStatus();
           setGoogleConnected(gAuth?.authenticated || false);
+          setGoogleServices(gAuth?.services || { gmail: !!gAuth?.authenticated, calendar: !!gAuth?.authenticated, drive: false });
         } catch (err) {}
       }
     };
@@ -424,6 +430,10 @@ export default function WorkspacePage() {
           } else if (actionType === 'reminder' || actionType === 'save_reminder') {
             if (status === 'success') showSuccess('Reminder saved successfully.');
             else if (status === 'error') showError('Failed to save reminder.');
+          } else if (metadata?.source === 'drive') {
+            if (status === 'success') showSuccess('Drive search completed.');
+            else if (status === 'no_results') showInfo('No matching files in Drive.');
+            else if (status === 'error') showError('Google Drive request failed.');
           } else if (requestType === 'retrieval' && metadata?.source === 'gmail') {
             if (status === 'success') showSuccess('Gmail search completed.');
             else if (status === 'no_results') showInfo('No emails found.');
@@ -502,6 +512,7 @@ export default function WorkspacePage() {
            if (actionType === 'send_email') showSuccess('Email sent successfully.');
            else if (actionType === 'create_calendar_event' || actionType === 'calendar') showSuccess('Calendar event created successfully.');
            else if (actionType === 'save_reminder' || actionType === 'reminder') showSuccess('Reminder saved successfully.');
+           else if (actionType === 'drive_save') showSuccess('Saved to Google Drive.');
            else showSuccess('Action executed successfully.');
         } else {
            showError('Failed to execute action.');
@@ -769,8 +780,11 @@ export default function WorkspacePage() {
                           : 'bg-red-400 shadow-[0_0_6px_rgba(248,113,113,.5)]'
                         }`}
                     />
-                    <span className={intg.connected ? 'text-emerald-400/70' : 'text-red-400/70'}>
-                      {intg.connected ? 'Connected' : 'Disconnected'}
+                    <span
+                      className={intg.connected ? 'text-emerald-400/70' : intg.needsReconnect ? 'text-amber-400/70' : 'text-red-400/70'}
+                      title={intg.needsReconnect ? 'Reconnect Google below to allow Drive' : undefined}
+                    >
+                      {intg.connected ? 'Connected' : intg.needsReconnect ? 'Reconnect' : 'Disconnected'}
                     </span>
                   </span>
                 </li>

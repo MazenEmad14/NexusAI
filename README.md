@@ -190,6 +190,15 @@ Interact with NexusAI via the `/api/v1/agent/` endpoints or directly from the fr
 ### RAG (Knowledge Base)
 You can upload files (`text/plain` or `application/pdf`) to a specific `project_id`. The system chunks the text, computes embeddings using the configured LLM, and stores them in Qdrant for the agent to query during conversations.
 
+### Google Drive
+
+Once Google is connected with Drive allowed, the agent can work with your Drive files:
+
+- **Find and read (no approval needed):** "find the budget spreadsheet in my drive", "what files did I change this week", "summarize the project proposal doc". It lists matches, or opens the best match and answers from its text (Google Docs, Sheets and Slides, PDFs and plain-text files up to 10 MB). File contents are treated as data: instructions written inside a file are never followed.
+- **Create and upload (asks for your approval first, like sending an email):** "save this summary as a Google Doc called Meeting Notes", "upload notes.txt to my Drive". Uploads can only come from your own uploaded project files.
+
+Setup: enable the **Google Drive API** in your Google Cloud project (APIs & Services, Library) and, while the app is in Testing mode, add yourself as a test user. The login asks for `drive.readonly` (to read your files) and `drive.file` (to create files; it cannot change files the app did not make). People who connected Google before Drive existed see "Reconnect" next to Drive in the sidebar: click **Connect Google** once more to allow it.
+
 ### Background jobs
 
 Reading a large PDF or embedding thousands of chunks can take minutes. Send `"background": true` in the body of

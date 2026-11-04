@@ -90,13 +90,14 @@ def test_project_ids_are_namespaced_per_user_and_reject_traversal():
 
 def test_data_analysis_only_reads_files_inside_the_users_project(tmp_path, monkeypatch):
     from agent.nodes import data_analysis as dan
+    from helpers import project_files
 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     (project_dir / "sales.csv").write_text("a,b\n1,2\n")
     (tmp_path / "secret.csv").write_text("a\n1\n")
 
-    monkeypatch.setattr(dan, "ProjectController", lambda: SimpleNamespace(get_project_path=lambda pid: str(project_dir)))
+    monkeypatch.setattr(project_files, "ProjectController", lambda: SimpleNamespace(get_project_path=lambda pid: str(project_dir)))
     state = {"user_id": "u1", "project_id": "default"}
 
     assert dan.resolve_user_file({**state, "file_path": "sales.csv"}).endswith("sales.csv")

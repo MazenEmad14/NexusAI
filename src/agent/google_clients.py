@@ -6,6 +6,7 @@ state is checkpointed to the database and a refresh token must not be stored the
 from helpers.exceptions import GoogleAuthRequiredException
 from helpers.google_context import get_google_token, update_google_token
 from stores.calendar.CalendarService import CalendarService
+from stores.drive.DriveService import DriveService
 from stores.gmail.GmailService import GmailService
 
 GOOGLE_CONNECT_MESSAGE = "Please connect your Google account from the Integrations panel to perform this action."
@@ -29,6 +30,18 @@ def calendar_for_request() -> CalendarService:
     if not token:
         raise GoogleAuthRequiredException("No Google account connected.")
     service = CalendarService()
+    refreshed = service.authenticate_from_dict(token)
+    if refreshed:
+        update_google_token(refreshed)
+    return service
+
+
+def drive_for_request() -> DriveService:
+    """A Drive client for this request's user (see gmail_for_request)."""
+    token = get_google_token()
+    if not token:
+        raise GoogleAuthRequiredException("No Google account connected.")
+    service = DriveService()
     refreshed = service.authenticate_from_dict(token)
     if refreshed:
         update_google_token(refreshed)

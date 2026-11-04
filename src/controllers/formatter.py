@@ -91,6 +91,39 @@ class ResponseFormatter:
         return response
 
     @staticmethod
+    def format_drive_results(files: list) -> str:
+        """Format a list of Google Drive files."""
+        lines = [f"📁 *Found {len(files)} file{'s' if len(files) != 1 else ''} in Google Drive:*\n\n"]
+        for index, item in enumerate(files, 1):
+            modified = (item.get("modified") or "")[:10]
+            line = f"{index}. *{item.get('name', 'Untitled')}*"
+            if modified:
+                line += f" ({modified})"
+            if item.get("link"):
+                line += f"\n   🔗 {item['link']}"
+            lines.append(line + "\n")
+        return "".join(lines)
+
+    @staticmethod
+    def format_drive_answer(file: dict, answer: str, truncated: bool = False) -> str:
+        """Format an answer drawn from one Drive file."""
+        response = f"📄 *{file.get('name', 'Document')}*\n\n{answer}"
+        if truncated:
+            response += "\n\n_I only read the first part of this file because it is long._"
+        if file.get("link"):
+            response += f"\n\n🔗 {file['link']}"
+        return response
+
+    @staticmethod
+    def format_drive_saved(result: dict, kind: str) -> str:
+        """Format the confirmation of a file created in Google Drive."""
+        what = "Document created" if kind == "create_document" else "File uploaded"
+        response = f"📁 *{what} in Google Drive!*\n\n📌 Name: {result.get('name', '')}\n"
+        if result.get("link"):
+            response += f"🔗 Link: {result['link']}\n"
+        return response
+
+    @staticmethod
     def format_no_results() -> str:
         """Format no results found message."""
         return (

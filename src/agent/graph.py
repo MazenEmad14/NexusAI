@@ -1,6 +1,6 @@
 """Builds the LangGraph workflow of the secretary agent.
 
-Pipeline: save query -> classify -> (conversation | knowledge base | Gmail | web search | daily
+Pipeline: save query -> classify -> (conversation | knowledge base | Gmail | Drive | web search | daily
 summary | data analysis | approved actions) -> format the reply.
 """
 import logging
@@ -10,13 +10,13 @@ from langgraph.graph import END, StateGraph
 
 from agent import routing
 from agent.deps import AgentDeps
-from agent.nodes import actions, conversational, data_analysis, gmail, intake, output, retrieval, summary, web
+from agent.nodes import actions, conversational, data_analysis, drive, gmail, intake, output, retrieval, summary, web
 from agent.state import AgentState
 
 logger = logging.getLogger('uvicorn.error')
 
 # Actions that change something outside the app pause for the user's approval first.
-APPROVAL_REQUIRED = ["send_email", "create_calendar_event", "save_reminder"]
+APPROVAL_REQUIRED = ["send_email", "create_calendar_event", "save_reminder", "drive_save"]
 
 
 def build_agent_graph(deps: AgentDeps = None, checkpointer=None):
@@ -43,6 +43,8 @@ def build_agent_graph(deps: AgentDeps = None, checkpointer=None):
     graph.add_node("send_email", node(actions.send_email_node))
     graph.add_node("create_calendar_event", node(actions.create_calendar_event_node))
     graph.add_node("save_reminder", node(actions.save_reminder_node))
+    graph.add_node("drive_search", node(drive.drive_search_node))
+    graph.add_node("drive_save", node(drive.drive_save_node))
     graph.add_node("daily_summary", node(summary.daily_summary_node))
     graph.add_node("data_analysis", node(data_analysis.data_analysis_node))
     graph.add_node("web_search", node(web.web_search_node))
@@ -63,6 +65,7 @@ def build_agent_graph(deps: AgentDeps = None, checkpointer=None):
             "data_analysis": "data_analysis",
             "web_search": "web_search",
             "search_gmail": "search_gmail",
+            "drive_search": "drive_search",
             "format_output": "format_output",
         }
     )
@@ -71,6 +74,7 @@ def build_agent_graph(deps: AgentDeps = None, checkpointer=None):
     graph.add_edge("conversational_node", "format_output")
     graph.add_edge("search_knowledge_base", "format_output")
     graph.add_edge("search_gmail", "format_output")
+    graph.add_edge("drive_search", "format_output")
     graph.add_edge("web_search", "format_output")
     graph.add_edge("daily_summary", "format_output")
 
@@ -84,6 +88,8 @@ def build_agent_graph(deps: AgentDeps = None, checkpointer=None):
             "save_reminder": "save_reminder",
             "data_analysis": "data_analysis",
             "search_gmail": "search_gmail",
+            "drive_search": "drive_search",
+            "drive_save": "drive_save",
             "search_knowledge_base": "search_knowledge_base",
             "format_output": "format_output",
         }
@@ -93,6 +99,7 @@ def build_agent_graph(deps: AgentDeps = None, checkpointer=None):
     graph.add_edge("send_email", "format_output")
     graph.add_edge("create_calendar_event", "format_output")
     graph.add_edge("save_reminder", "format_output")
+    graph.add_edge("drive_save", "format_output")
     graph.add_edge("data_analysis", "format_output")
 
     graph.add_edge("format_output", END)

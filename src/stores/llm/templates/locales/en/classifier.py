@@ -40,6 +40,16 @@ RULE 5 — REMINDER (action_type: "reminder"):
   If the user wants to SET or UPDATE a reminder for themselves:
   -> {"request_type": "action", "action_type": "reminder"}
 
+RULE 9 — GOOGLE DRIVE, FIND OR READ (action_type: "drive_search"):
+  If the user wants to FIND, LIST, OPEN, READ or SUMMARIZE a file in their Google Drive (a Google Doc, Sheet, slides, a PDF in Drive):
+  -> {"request_type": "action", "action_type": "drive_search"}
+  Keywords: drive, google drive, my drive, google doc, find the file/document in drive, open the doc
+
+RULE 10 — GOOGLE DRIVE, SAVE OR UPLOAD (action_type: "drive_save"):
+  If the user wants to CREATE a document in Google Drive, SAVE something to Drive, or UPLOAD one of their uploaded files to Drive:
+  -> {"request_type": "action", "action_type": "drive_save"}
+  Keywords: save to drive, create a google doc, put it in drive, upload to drive
+
 RULE 6 — DAILY SUMMARY (action_type: "summary"):
   If the user asks for a summary of their day, agenda, or tasks for today:
   -> {"request_type": "action", "action_type": "summary"}
@@ -54,7 +64,7 @@ RULE 8 — RETRIEVAL (request_type: "retrieval"):
   -> {"request_type": "retrieval", "action_type": ""}
 
 === OUTPUT SCHEMA ===
-{"request_type": "conversational"|"retrieval"|"action"|"web_search", "action_type": ""|"summary"|"send_email"|"gmail"|"calendar"|"reminder"|"data_analysis", "priority": "low"|"medium"|"high"|"critical"}
+{"request_type": "conversational"|"retrieval"|"action"|"web_search", "action_type": ""|"summary"|"send_email"|"gmail"|"calendar"|"reminder"|"data_analysis"|"drive_search"|"drive_save", "priority": "low"|"medium"|"high"|"critical"}
 
 === FEW-SHOT EXAMPLES ===
 
@@ -99,6 +109,18 @@ User: plot a chart from my CSV data
 
 User: what is the capital of France?
 {"request_type": "web_search", "action_type": "", "priority": "low"}
+
+User: find the budget spreadsheet in my drive
+{"request_type": "action", "action_type": "drive_search", "priority": "medium"}
+
+User: open the project proposal doc from Google Drive and summarize it
+{"request_type": "action", "action_type": "drive_search", "priority": "medium"}
+
+User: save this summary as a Google Doc called Meeting Notes
+{"request_type": "action", "action_type": "drive_save", "priority": "medium"}
+
+User: upload the file I uploaded to my Drive
+{"request_type": "action", "action_type": "drive_save", "priority": "medium"}
 
 User: remind me to call the dentist tomorrow at 9am
 {"request_type": "action", "action_type": "reminder", "priority": "medium"}
@@ -187,3 +209,19 @@ Return ONLY a valid JSON object with this exact schema:
 extract_user = Template(r'''User request: "${query}"''')
 
 no_files = Template("No files available. The user must upload a file first.")
+
+
+drive_system = Template(r"""Extract what the user wants to put in Google Drive. Resolve any pronouns ("this", "it", "that summary") using the conversation history.
+Return ONLY a valid JSON object:
+{"operation": "create_document" | "upload_file", "title": "document title", "content": "the full text of the document", "file_name": "name of the uploaded file"}
+
+Here are the files the user has uploaded to their project:
+${available_files}
+
+RULES:
+1. "create_document": the user wants a new Google Doc. Put the text to save in "content": copy it from the conversation if they refer to something said earlier (for example "save this summary"), or write it if they ask you to draft it. Give it a short, clear "title".
+2. "upload_file": the user wants one of their uploaded files copied to Drive. Put its exact name from the list above in "file_name". If no uploaded file matches, use "create_document" instead.
+3. Leave fields you do not need as empty strings.
+4. Write the content in the same language as the user's request.""")
+
+no_uploaded_files = Template("No files uploaded yet.")

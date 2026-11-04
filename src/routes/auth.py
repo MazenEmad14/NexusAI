@@ -9,6 +9,7 @@ import time
 from helpers.auth_utils import get_current_user
 from helpers.services import services_of
 from helpers.config import get_settings
+from helpers.google_auth import ALL_SCOPES, credentials_from_token, service_status
 from helpers.privacy import mask_email
 from models.UserModel import UserModel
 
@@ -19,13 +20,7 @@ auth_router = APIRouter(
     tags=["api_v1", "auth"]
 )
 
-SCOPES = [
-    'https://www.googleapis.com/auth/gmail.readonly',
-    'https://www.googleapis.com/auth/gmail.send',
-    'https://www.googleapis.com/auth/gmail.modify',
-    'https://www.googleapis.com/auth/calendar',
-    'https://www.googleapis.com/auth/calendar.events'
-]
+SCOPES = ALL_SCOPES  # Gmail, Calendar and Drive (see helpers/google_auth.py)
 
 CREDENTIALS_PATH = Path(__file__).resolve().parent.parent / "credentials.json"
 LOGIN_TTL_SECONDS = 300
@@ -91,6 +86,7 @@ async def google_callback(request: Request, code: str, state: str):
         flow = pending["flow"]
         flow.fetch_token(code=code)
         token_dict = json.loads(flow.credentials.to_json())
+        token_dict["granted_scopes"] = sorted(flow.credentials.scopes or [])  # what the user actually allowed
     except Exception:
         logger.error("Error exchanging Google OAuth code", exc_info=True)
         raise HTTPException(status_code=400, detail="Failed to complete Google authentication")
@@ -109,15 +105,16 @@ async def google_callback(request: Request, code: str, state: str):
 @auth_router.get("/google/status")
 async def google_status(request: Request, current_user: dict = Depends(get_current_user)):
     """Return whether the logged-in user has a usable Google connection."""
-    from google.oauth2.credentials import Credentials
-
     user_model = await UserModel.create_instance(services_of(request).mongo_db)
     token_dict = await user_model.get_google_token(current_user["email"])
     if not token_dict:
-        return JSONResponse(content={"authenticated": False})
+        return JSONResponse(content={"authenticated": False, "services": service_status(None)})
     try:
-        creds = Credentials.from_authorized_user_info(token_dict, SCOPES)
-        return JSONResponse(content={"authenticated": bool(creds.valid or creds.refresh_token)})
+        creds = credentials_from_token(token_dict)
+        return JSONResponse(content={
+            "authenticated": bool(creds.valid or creds.refresh_token),
+            "services": service_status(token_dict),  # which of Gmail, Calendar and Drive the user allowed
+        })
     except Exception:
         logger.error("Failed to parse stored Google token in google_status", exc_info=True)
         return JSONResponse(content={"authenticated": False})

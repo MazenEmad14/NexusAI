@@ -1,5 +1,4 @@
 import os
-import json
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
@@ -12,6 +11,7 @@ from helpers.exceptions import GoogleAuthRequiredException, ValidationFailed
 from stores.google_errors import translate_google_error
 from helpers.timezones import local_now, resolve_timezone
 from helpers.validation import parse_recipients
+from helpers.google_auth import credentials_from_token, refreshed_token
 import httplib2
 import google_auth_httplib2
 
@@ -55,7 +55,7 @@ class CalendarService:
             raise GoogleAuthRequiredException("No Google token found. Please connect your Google account.")
 
         try:
-            creds = Credentials.from_authorized_user_info(token_dict, SCOPES)
+            creds = credentials_from_token(token_dict)
         except Exception as e:
             logger.error(f"Calendar: Failed to load token from dict: {e}")
             raise GoogleAuthRequiredException("Invalid Google token. Please reconnect your Google account.")
@@ -78,7 +78,7 @@ class CalendarService:
         logger.info("Google Calendar API authenticated successfully (per-user DB token)")
 
         # Return refreshed token dict so caller can save it back to DB
-        return json.loads(creds.to_json())
+        return refreshed_token(creds, token_dict)
 
     def authenticate(self, allow_interactive: bool = True):
         """Authenticate with Google Calendar API using OAuth2 (legacy shared token.json)."""
