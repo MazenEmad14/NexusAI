@@ -400,6 +400,7 @@ export default function WorkspacePage() {
             response: `Pending approval to execute action: ${actionType}`,
             type: actionType,
             details: actionDetails,
+            resumeToken: metadata?.resume_token,
           });
           showInfo('⏳ Action requires your approval');
         },
@@ -488,7 +489,7 @@ export default function WorkspacePage() {
     abortRef.current = new AbortController();
 
     try {
-      const data = await resumeAction(pendingAction.threadId, approve, abortRef.current.signal);
+      const data = await resumeAction(pendingAction.threadId, approve, pendingAction.resumeToken, abortRef.current.signal);
       setAgentState(null);
       setPendingAction(null);
 
