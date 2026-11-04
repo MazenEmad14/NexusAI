@@ -22,6 +22,10 @@ DRIVE_SCOPES = [DRIVE_READ_SCOPE, DRIVE_FILE_SCOPE]
 # Everything the app asks for when a user connects Google.
 ALL_SCOPES = GMAIL_SCOPES + CALENDAR_SCOPES + DRIVE_SCOPES
 
+# "Continue with Google" also needs to know who the person is.
+IDENTITY_SCOPES = ["openid", SCOPE_BASE + "userinfo.email", SCOPE_BASE + "userinfo.profile"]
+SIGN_IN_SCOPES = ALL_SCOPES + IDENTITY_SCOPES
+
 _BOOKKEEPING_KEYS = ("scopes", "granted_scopes")
 
 

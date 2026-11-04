@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { Mail, Lock, User, ArrowLeft, Eye, EyeOff } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getGoogleAuthUrl } from "../services/api";
+import { getGoogleAuthUrl, getGoogleSignInUrl } from "../services/api";
 import { useAuth } from "../hooks/useAuth";
 
 const GoogleIcon = () => (
@@ -68,6 +68,14 @@ const cardVariants = {
   },
 };
 
+// What to tell the person when Google sends them back here with a problem (?google_error=...).
+const GOOGLE_ERRORS = {
+  exists: "An account with this email already exists. Sign in with your email and password, then connect Google from Settings.",
+  unverified: "Google says this email address is not verified, so it can't be used to sign in.",
+  denied: "Google sign-in was cancelled.",
+  failed: "Google sign-in didn't finish. Please try again.",
+};
+
 const formVariants = {
   enter: { opacity: 0, x: 20 },
   center: { opacity: 1, x: 0, transition: { duration: 0.35, ease: "easeOut" } },
@@ -76,9 +84,25 @@ const formVariants = {
 
 export default function AuthPage() {
   const [mode, setMode] = useState("signin");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() => {
+    const reason = new URLSearchParams(window.location.search).get("google_error");
+    return reason ? GOOGLE_ERRORS[reason] || GOOGLE_ERRORS.failed : "";
+  });
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const navigate = useNavigate();
+
+  // The reason was shown once; take it out of the address so a reload does not repeat it.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has("google_error")) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
+
+  const switchMode = (next) => {
+    setMode(next);
+    setError("");
+  };
   const { status, signIn, signUp } = useAuth();
 
   // Already signed in (a bookmarked /auth, or the back button): go straight to the workspace.
@@ -142,16 +166,23 @@ export default function AuthPage() {
     }
   };
 
+  // "Continue with Google" works for both signing in and signing up: Google tells us who the person is,
+  // and the account is created the first time.
   const handleGoogle = async (e) => {
     e.preventDefault();
+    setError("");
+    setGoogleLoading(true);
     try {
-        const data = await getGoogleAuthUrl();
-        if (data && data.auth_url) {
-            window.location.href = data.auth_url;
-        }
+      const data = await getGoogleSignInUrl();
+      if (data && data.auth_url) {
+        window.location.href = data.auth_url;
+        return;
+      }
+      setError("Google sign-in is not available right now.");
     } catch (err) {
-        setError("Failed to load Google Auth URL");
+      setError(err?.message || "Google sign-in is not available right now.");
     }
+    setGoogleLoading(false);
   };
 
   return (
@@ -209,21 +240,25 @@ export default function AuthPage() {
 
           {/* ── Mode Tabs ── */}
           <div className="relative flex bg-white/5 rounded-xl p-1 mb-7">
-            <motion.div
-              layout
-              className="absolute inset-y-1 rounded-lg bg-gradient-to-r from-[#00f0ff]/15 to-[#a855f7]/15 border border-white/10"
-              style={{ width: "calc(50% - 4px)" }}
-              animate={{ x: mode === "signin" ? 4 : "calc(100% + 4px)" }}
-              transition={{ type: "spring", stiffness: 350, damping: 30 }}
-            />
             {["signin", "signup"].map((m) => (
               <button
                 key={m}
-                onClick={() => setMode(m)}
+                type="button"
+                role="tab"
+                aria-selected={mode === m}
+                onClick={() => switchMode(m)}
                 className={`relative z-10 flex-1 py-2.5 text-sm font-medium rounded-lg transition-colors duration-300 cursor-pointer ${
                   mode === m ? "text-white" : "text-white/40 hover:text-white/60"
                 }`}
               >
+                {/* The highlight belongs to the active tab itself, so it can never sit on the other one. */}
+                {mode === m && (
+                  <motion.span
+                    layoutId="auth-tab-highlight"
+                    className="absolute inset-0 -z-10 rounded-lg bg-gradient-to-r from-[#00f0ff]/15 to-[#a855f7]/15 border border-white/10"
+                    transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                  />
+                )}
                 {m === "signin" ? "Sign In" : "Sign Up"}
               </button>
             ))}
@@ -231,13 +266,15 @@ export default function AuthPage() {
 
           {/* ── Google Button ── */}
           <motion.button
+            type="button"
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
             onClick={handleGoogle}
+            disabled={googleLoading}
             className="group relative w-full flex items-center justify-center gap-3 py-3 px-4 bg-white/10 hover:bg-white/[0.14] border border-white/10 hover:border-white/20 rounded-xl text-white font-medium text-sm transition-all duration-300 cursor-pointer hover:shadow-[0_0_24px_rgba(255,255,255,0.06)]"
           >
             <GoogleIcon />
-            <span>Continue with Google</span>
+            <span>{googleLoading ? "Opening Google…" : "Continue with Google"}</span>
           </motion.button>
 
           {/* ── Divider ── */}
@@ -254,14 +291,14 @@ export default function AuthPage() {
           )}
 
           {/* ── Forms ── */}
-          <AnimatePresence mode="wait">
+          {/* No exit animation: the form for the chosen tab appears at once, so the tab and the form never disagree. */}
+          <>
             {mode === "signin" ? (
               <motion.form
                 key="signin"
                 variants={formVariants}
                 initial="enter"
                 animate="center"
-                exit="exit"
                 onSubmit={handleSignIn}
                 className="space-y-4"
               >
@@ -305,7 +342,6 @@ export default function AuthPage() {
                 variants={formVariants}
                 initial="enter"
                 animate="center"
-                exit="exit"
                 onSubmit={handleSignUp}
                 className="space-y-4"
               >
@@ -352,7 +388,7 @@ export default function AuthPage() {
                 </motion.button>
               </motion.form>
             )}
-          </AnimatePresence>
+          </>
         </div>
 
         {/* ── Footer Link ── */}
