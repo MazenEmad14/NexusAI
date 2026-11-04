@@ -230,3 +230,17 @@ def test_data_analysis_node_awaits_agenerate_text(tmp_path, monkeypatch):
     assert result["result"] == "Region a leads with 15."
     assert result["chart_data"]["type"] == "bar"
     assert {row["Region"]: row["Sales"] for row in result["chart_data"]["data"]} == {"a": 15, "b": 3}
+
+
+def test_groq_reasoning_models_are_asked_for_low_effort_so_the_answer_is_not_empty():
+    provider = GroqProvider(api_key="x")
+    provider.set_generation_model("openai/gpt-oss-20b")
+    provider.client = SimpleNamespace(chat=FakeChat())
+    provider.generate_text("hi")
+    sent = provider.client.chat.calls[0]
+    assert sent["reasoning_effort"] == "low" and sent["include_reasoning"] is False
+
+    plain = _groq()
+    plain.client = SimpleNamespace(chat=FakeChat())
+    plain.generate_text("hi")
+    assert "reasoning_effort" not in plain.client.chat.calls[0]
