@@ -1,6 +1,5 @@
 import os
 import base64
-import json
 import logging
 import threading
 from email.mime.text import MIMEText
@@ -13,6 +12,7 @@ from googleapiclient.discovery import build
 from helpers.exceptions import ExternalServiceError, GoogleAuthRequiredException, ValidationFailed
 from stores.google_errors import translate_google_error
 from helpers.validation import has_header_injection, parse_recipients
+from helpers.google_auth import credentials_from_token, refreshed_token
 import httplib2
 import google_auth_httplib2
 
@@ -60,7 +60,7 @@ class GmailService:
             raise GoogleAuthRequiredException("No Google token found. Please connect your Google account.")
 
         try:
-            creds = Credentials.from_authorized_user_info(token_dict, SCOPES)
+            creds = credentials_from_token(token_dict)
         except Exception as e:
             logger.error(f"Gmail: Failed to load token from dict: {e}")
             raise GoogleAuthRequiredException("Invalid Google token. Please reconnect your Google account.")
@@ -83,7 +83,7 @@ class GmailService:
         logger.info("Gmail API authenticated successfully (per-user DB token)")
 
         # Return refreshed token dict so caller can save it back to DB
-        return json.loads(creds.to_json())
+        return refreshed_token(creds, token_dict)
 
     def authenticate(self, allow_interactive: bool = True):
         """Authenticate with Gmail API using OAuth2 (legacy shared token.json)."""

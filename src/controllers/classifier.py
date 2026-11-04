@@ -1,5 +1,5 @@
 from .BaseController import BaseController
-from .llm_schemas import Classification, EmailDetails, FileDetails, MeetingDetails, ReminderDetails
+from .llm_schemas import Classification, DriveDetails, EmailDetails, FileDetails, MeetingDetails, ReminderDetails
 from helpers.exceptions import LLMOutputError, LLMUnavailable
 from helpers.llm_json import llm_json_sync
 from helpers.prompts import render
@@ -162,6 +162,8 @@ class ClassifierController(BaseController):
             return self._extract_reminder_details(query, chat_history, timezone_name)
         elif action_type == "data_analysis":
             return self._extract_data_analysis_details(query, chat_history, available_files)
+        elif action_type == "drive_save":
+            return self._extract_drive_details(query, chat_history, available_files)
         return {}
 
     def _extract_email_details(self, query: str, chat_history: list = None) -> dict:
@@ -186,6 +188,11 @@ class ClassifierController(BaseController):
         )
 
         return self._extract_with_llm(query, system_prompt, chat_history, ReminderDetails)
+
+    def _extract_drive_details(self, query: str, chat_history: list = None, available_files: str = "") -> dict:
+        system_prompt = render("classifier", "drive_system",
+                               available_files=available_files or render("classifier", "no_uploaded_files"))
+        return self._extract_with_llm(query, system_prompt, chat_history, DriveDetails)
 
     def _extract_data_analysis_details(self, query: str, chat_history: list = None, available_files: str = "") -> dict:
         system_prompt = render("classifier", "file_system", available_files=available_files or render("classifier", "no_files"))

@@ -8,20 +8,18 @@ the server.
 import asyncio
 import json
 import logging
-import os
 from typing import Any, Literal, Optional
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
 
-from controllers.ProjectController import ProjectController
 from helpers.llm_json import llm_json
-from helpers.project_scope import scoped_project_id
 from agent.deps import AgentDeps
 from agent.errors import fail
 from helpers.exceptions import LLMUnavailable
 from agent.state import AgentState
 from helpers.prompts import render
+from helpers.project_files import resolve_project_file
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -51,20 +49,8 @@ def resolve_user_file(state: AgentState) -> Optional[str]:
     Only the final path component of the requested value is used, so neither the
     client nor the LLM can point the server at any other location.
     """
-    requested = state.get("file_path") or ""
-    name = os.path.basename(requested.replace("\\", "/"))
-    if not name or os.path.splitext(name)[1].lower() not in READABLE_EXTENSIONS:
-        return None
-    try:
-        project_dir = ProjectController().get_project_path(
-            scoped_project_id(state.get("user_id", ""), state.get("project_id", "default"))
-        )
-    except ValueError:
-        return None
-    full = os.path.realpath(os.path.join(project_dir, name))
-    if os.path.commonpath([full, os.path.realpath(project_dir)]) != os.path.realpath(project_dir):
-        return None
-    return full if os.path.isfile(full) else None
+    return resolve_project_file(
+        state.get("user_id", ""), state.get("project_id", "default"), state.get("file_path") or "", READABLE_EXTENSIONS)
 
 
 def _load_dataframe(path: str) -> pd.DataFrame:

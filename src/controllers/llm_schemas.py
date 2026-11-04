@@ -9,7 +9,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 PRIORITIES = ("low", "medium", "high", "critical")
-ACTION_TYPES = ("summary", "send_email", "gmail", "calendar", "reminder", "data_analysis")
+ACTION_TYPES = ("summary", "send_email", "gmail", "calendar", "reminder", "data_analysis", "drive_search", "drive_save")
 REQUEST_TYPES = ("action", "retrieval", "web_search", "conversational")
 
 
@@ -35,7 +35,7 @@ class Classification(BaseModel):
 
         if action_type not in ACTION_TYPES:
             # Models sometimes put the action in another key or a longer phrase; look through every value.
-            action_type = next((a for a in ("send_email", "calendar", "gmail", "data_analysis", "reminder") if a in everything), "")
+            action_type = next((a for a in ("send_email", "calendar", "gmail", "data_analysis", "reminder", "drive_search", "drive_save") if a in everything), "")
             if not action_type and "summary" in everything and "action + summary" in everything:
                 action_type = "summary"
         if action_type in ACTION_TYPES:
@@ -133,6 +133,74 @@ class FileDetails(BaseModel):
     @classmethod
     def _blank_if_missing(cls, value):
         return _text(value)
+
+
+class DriveDetails(BaseModel):
+    """What to put in Google Drive: a new document written from text, or one of the user's uploaded files."""
+    operation: str = "create_document"
+    title: str = ""
+    content: str = ""
+    file_name: str = ""
+
+    @field_validator("title", "file_name", mode="before")
+    @classmethod
+    def _short(cls, value):
+        return _text(value)[:200]
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _content(cls, value):
+        return _text(value)[:50000]
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def _operation(cls, value):
+        value = _text(value).lower()
+        return value if value in ("create_document", "upload_file") else "create_document"
+
+
+class DrivePlan(BaseModel):
+    """How to look for files in Drive. The model only fills in terms; the search query is built by the code."""
+    operation: str = "search"   # "search": list matching files; "read": open the best match and answer from it
+    name: str = ""              # part of the file name
+    text: str = ""              # words that appear inside the file
+    kind: str = "any"           # any | doc | sheet | slides | pdf | folder | image
+    modified_days: Optional[int] = None
+    max_results: int = 5
+
+    @field_validator("name", "text", mode="before")
+    @classmethod
+    def _terms(cls, value):
+        return _text(value)[:100]
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def _operation(cls, value):
+        value = _text(value).lower()
+        return value if value in ("search", "read") else "search"
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _kind(cls, value):
+        value = _text(value).lower()
+        return value if value in ("doc", "sheet", "slides", "pdf", "folder", "image") else "any"
+
+    @field_validator("modified_days", mode="before")
+    @classmethod
+    def _days(cls, value):
+        try:
+            days = int(value)
+        except (TypeError, ValueError):
+            return None
+        return days if 1 <= days <= 3650 else None
+
+    @field_validator("max_results", mode="before")
+    @classmethod
+    def _limit(cls, value):
+        try:
+            return max(1, min(int(value), 10))
+        except (TypeError, ValueError):
+            return 5
 
 
 # ── what comes out of emails ─────────────────────────────────────────────────

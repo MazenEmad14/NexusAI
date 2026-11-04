@@ -33,6 +33,10 @@ def route_request_type(state: AgentState) -> str:
         logger.info("[Router] → search_gmail")
         return "search_gmail"
 
+    if act == "drive_search":
+        logger.info("[Router] → drive_search")
+        return "drive_search"
+
     if req == "action":
         # send_email / calendar / reminder are handled inside route_action_type
         logger.info("[Router] → extract_action_details")
@@ -58,6 +62,10 @@ def route_action_type(state: AgentState) -> str:
         return "data_analysis"
     elif action_type == "gmail":
         return "search_gmail"
+    elif action_type == "drive_search":
+        return "drive_search"
+    elif action_type == "drive_save":
+        return "drive_save"
         
     # If it's an action but the type is empty or unrecognized, don't just format output and fail.
     # Fallback to the search cascade so it can attempt to find information.

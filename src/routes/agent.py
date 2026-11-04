@@ -85,7 +85,7 @@ def _validate_resume_state(state_snapshot, thread_id: str, resume_token: str | N
     else:
         current_nodes = [current_nodes]
 
-    interruptable_nodes = {"send_email", "create_calendar_event", "save_reminder"}
+    interruptable_nodes = {"send_email", "create_calendar_event", "save_reminder", "drive_save"}
     if not any(node in interruptable_nodes for node in current_nodes):
         raise ThreadStateLoadError("Approval is stale or not interruptible", code="stale_approval")
 
