@@ -20,7 +20,7 @@ class ClassifierController(BaseController):
         super().__init__()
         self.generation_client = generation_client
 
-    def classify_query(self, query: str, chat_history: list = None) -> dict:
+    def classify_query(self, query: str, chat_history: list = None, uploaded_documents: str = "") -> dict:
         """
         Classify a user query into request_type and action_type.
         Returns: {"request_type": "retrieval"|"action", "action_type": "send_email"|"calendar"|"reminder"|""}
@@ -104,7 +104,8 @@ class ClassifierController(BaseController):
             try:
                 result = llm_json_sync(
                     self.generation_client,
-                    render("classifier", "classify_user", query=query),
+                    (render("classifier", "classify_user_with_documents", query=query, documents=uploaded_documents)
+                     if uploaded_documents else render("classifier", "classify_user", query=query)),
                     Classification,
                     chat_history=messages,
                     max_output_tokens=100,
@@ -172,19 +173,20 @@ class ClassifierController(BaseController):
         return self._extract_with_llm(query, system_prompt, chat_history, EmailDetails)
 
     def _extract_meeting_details(self, query: str, chat_history: list = None, timezone_name: str = None) -> dict:
-        from helpers.timezones import local_now, resolve_timezone
+        from helpers.timezones import local_now, resolve_timezone, upcoming_days
         # The current time in the user's zone, so "tomorrow" is the user's tomorrow, not the server's.
         now = f"{local_now(timezone_name).strftime('%Y-%m-%d %H:%M')} ({resolve_timezone(timezone_name).key})"
-        system_prompt = render("classifier", "meeting_system", now=now)
+        system_prompt = render("classifier", "meeting_system", now=now, calendar=upcoming_days(timezone_name))
 
         return self._extract_with_llm(query, system_prompt, chat_history, MeetingDetails)
 
     def _extract_reminder_details(self, query: str, chat_history: list = None, timezone_name: str = None) -> dict:
-        from helpers.timezones import local_now, resolve_timezone
+        from helpers.timezones import local_now, resolve_timezone, upcoming_days
         today = local_now(timezone_name)
         system_prompt = render("classifier", "reminder_system",
             current_date=f"{today.strftime('%Y-%m-%d')}, time zone {resolve_timezone(timezone_name).key}",
             current_weekday=today.strftime("%A"),
+            calendar=upcoming_days(timezone_name),
         )
 
         return self._extract_with_llm(query, system_prompt, chat_history, ReminderDetails)

@@ -6,6 +6,10 @@ from ..LLMEnums import GroqEnums
 from ..LLMInterface import LLMInterface
 
 
+# Extra tokens a reasoning model (gpt-oss) may spend thinking before it answers.
+REASONING_HEADROOM_TOKENS = 512
+
+
 class GroqProvider(LLMInterface):
     def __init__(self, api_key: str,
                  default_input_max_characters: int = 1000,
@@ -41,6 +45,9 @@ class GroqProvider(LLMInterface):
             "temperature": temperature,
             "max_tokens": max_output_tokens,
         }
+        if "gpt-oss" in (self.generation_model_id or ""):
+            # max_tokens also counts the hidden reasoning, so the answer needs room on top of it.
+            kwargs["max_tokens"] = max_output_tokens + REASONING_HEADROOM_TOKENS
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         if "gpt-oss" in (self.generation_model_id or ""):

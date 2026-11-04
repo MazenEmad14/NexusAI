@@ -247,3 +247,15 @@ def test_the_morning_briefing_goes_out_at_8am_local_time_once_a_day(monkeypatch)
         assert started == ["cairo", "newyork", "cairo"]
 
     asyncio.run(scenario())
+
+
+def test_the_upcoming_days_list_lets_a_model_look_up_weekdays():
+    from datetime import datetime, timezone as tz
+    from helpers.timezones import upcoming_days
+
+    # 2026-11-04 is a Wednesday; at 23:30 UTC it is already Thursday in Cairo (UTC+2).
+    now = datetime(2026, 11, 4, 23, 30, tzinfo=tz.utc)
+    lines = upcoming_days("Africa/Cairo", days=7, now=now).splitlines()
+    assert lines[0] == "Thursday 2026-11-05 (today)" and lines[1] == "Friday 2026-11-06 (tomorrow)"
+    assert lines[-1] == "Wednesday 2026-11-11" and len(lines) == 7
+    assert "Monday 2026-11-09" in lines

@@ -4,6 +4,7 @@ import logging
 from agent.deps import AgentDeps
 from agent.errors import fail
 from helpers.exceptions import LLMUnavailable
+from helpers.file_types import is_indexable
 from helpers.privacy import redact_text
 from agent.history import append_chat_turn
 from agent.state import AgentState
@@ -60,6 +61,16 @@ async def save_query_node(state: AgentState, deps: AgentDeps) -> AgentState:
     return state
 
 
+def _document_names(state: AgentState, limit: int = 10) -> str:
+    """The names of the user's uploaded documents (not spreadsheets, which are for data analysis), for the classifier."""
+    names = []
+    for line in state.get("metadata", {}).get("available_files", "").splitlines():
+        name = line.split(" -> ")[0].strip()
+        if name and is_indexable(name):
+            names.append(name)
+    return ", ".join(names[:limit])
+
+
 def detect_request_type_node(state: AgentState, deps: AgentDeps) -> AgentState:
     """Classify the query into retrieval or action."""
     generation_client = deps.generation_client
@@ -68,7 +79,8 @@ def detect_request_type_node(state: AgentState, deps: AgentDeps) -> AgentState:
     try:
         classification = classifier.classify_query(
             query=state["query"],
-            chat_history=state.get("chat_history", [])
+            chat_history=state.get("chat_history", []),
+            uploaded_documents=_document_names(state),
         )
     except LLMUnavailable as exc:
         logger.error(f"Cannot classify the request: {exc}")

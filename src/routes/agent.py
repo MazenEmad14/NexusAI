@@ -348,6 +348,7 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
             }
         )
 
+import shutil
 import tempfile
 import threading
 from gtts import gTTS
@@ -365,16 +366,36 @@ _whisper_model = None
 _whisper_lock = threading.Lock()
 
 
+class FfmpegMissing(RuntimeError):
+    """Whisper needs an `ffmpeg` program to decode audio and none can be found."""
+
+
+def _ensure_ffmpeg_on_path() -> None:
+    """Make an executable called `ffmpeg` findable: the system one, or the one bundled with imageio-ffmpeg.
+
+    Whisper starts the program by that exact name, but the bundled binary is named like
+    `ffmpeg-win-x86_64-v9.0.2.exe`, so a copy called `ffmpeg` is placed in a folder added to PATH."""
+    if shutil.which("ffmpeg"):
+        return
+    try:
+        import imageio_ffmpeg
+        bundled = imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError):
+        raise FfmpegMissing("ffmpeg is not installed")
+    folder = os.path.join(tempfile.gettempdir(), "nexusai-ffmpeg")
+    os.makedirs(folder, exist_ok=True)
+    target = os.path.join(folder, "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if not os.path.exists(target):
+        shutil.copy2(bundled, target)
+    os.environ["PATH"] += os.pathsep + folder  # appended: no other ffmpeg is on PATH (checked above)
+
+
 def _get_whisper_model():
     """Load the Whisper model on first use, not at import time (it is slow and ~150 MB)."""
     global _whisper_model
     with _whisper_lock:
         if _whisper_model is None:
-            try:  # the bundled ffmpeg lets Whisper decode audio without a system install
-                import imageio_ffmpeg
-                os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
-            except ImportError:
-                pass
+            _ensure_ffmpeg_on_path()
             _whisper_model = whisper.load_model(get_settings().WHISPER_MODEL)
         return _whisper_model
 
@@ -406,6 +427,14 @@ async def stt_endpoint(request: Request, file: UploadFile = File(...), current_u
             os.remove(tmp_path)
 
         return {"text": text}
+    except FfmpegMissing:
+        logger.error("Speech-to-text needs ffmpeg: install it, or run: pip install imageio-ffmpeg")
+        return JSONResponse(status_code=503, content={"error": "Speech-to-text is not fully set up on this server (ffmpeg is missing)"})
+    except RuntimeError as exc:
+        if "Failed to load audio" in str(exc):  # Whisper could not decode the upload: the client sent something that is not audio
+            return JSONResponse(status_code=400, content={"error": "The audio could not be read. Record again or upload a different file."})
+        logger.error("Error in STT endpoint", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Speech transcription failed"})
     except Exception:
         logger.error("Error in STT endpoint", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "Speech transcription failed"})

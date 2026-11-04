@@ -34,6 +34,20 @@ def local_now(name: Optional[str] = None) -> datetime:
     return datetime.now(timezone.utc).astimezone(resolve_timezone(name))
 
 
+def upcoming_days(name: Optional[str] = None, days: int = 15, now: Optional[datetime] = None) -> str:
+    """The next `days` dates with their weekday names, one per line, starting today.
+
+    Models are unreliable at working out which date "next Monday" is, but reliable at looking it up in a list."""
+    zone = resolve_timezone(name)
+    start = (now or datetime.now(timezone.utc)).astimezone(zone).date()
+    lines = []
+    for offset in range(days):
+        day = start + timedelta(days=offset)
+        label = " (today)" if offset == 0 else " (tomorrow)" if offset == 1 else ""
+        lines.append(f"{day.strftime('%A')} {day.isoformat()}{label}")
+    return "\n".join(lines)
+
+
 def day_bounds(name: Optional[str] = None, now: Optional[datetime] = None) -> tuple[datetime, datetime]:
     """Start (inclusive) and end (exclusive) of the user's current day, as aware datetimes.
 
