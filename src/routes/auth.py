@@ -9,9 +9,12 @@ import time
 from helpers.auth_utils import get_current_user
 from helpers.services import services_of
 from helpers.config import get_settings
-from helpers.google_auth import ALL_SCOPES, credentials_from_token, service_status
+from helpers.google_auth import ALL_SCOPES, SIGN_IN_SCOPES, credentials_from_token, service_status
+from helpers.exceptions import EmailAlreadyRegistered
 from helpers.privacy import mask_email
+from models.RateLimitModel import RateLimitModel
 from models.UserModel import UserModel
+from routes.local_auth import start_session
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -24,6 +27,7 @@ SCOPES = ALL_SCOPES  # Gmail, Calendar and Drive (see helpers/google_auth.py)
 
 CREDENTIALS_PATH = Path(__file__).resolve().parent.parent / "credentials.json"
 LOGIN_TTL_SECONDS = 300
+GOOGLE_SIGNIN_MAX_PER_MINUTE = 20
 
 # In-flight OAuth logins keyed by the `state` value. Each entry owns its own Flow
 # (and therefore its own PKCE code_verifier), so concurrent logins never mix.
@@ -36,8 +40,8 @@ def _cleanup_pending_logins():
         del _pending_logins[key]
 
 
-def _new_flow() -> Flow:
-    flow = Flow.from_client_secrets_file(str(CREDENTIALS_PATH), scopes=SCOPES)
+def _new_flow(scopes=None) -> Flow:
+    flow = Flow.from_client_secrets_file(str(CREDENTIALS_PATH), scopes=scopes or SCOPES)
     flow.redirect_uri = get_settings().GOOGLE_REDIRECT_URI
     return flow
 
@@ -48,15 +52,19 @@ async def google_login(origin: str = None, current_user: dict = Depends(get_curr
     Start the Google OAuth flow for the logged-in user.
     Returns the consent URL; the callback links the resulting token to this user.
     """
+    return JSONResponse(content={"auth_url": _start_flow("connect", SCOPES, origin, current_user["email"])})
+
+
+def _start_flow(purpose: str, scopes, origin: str = None, user_email: str = None) -> str:
+    """Create the Google consent URL and remember the login by its `state` value."""
     if not CREDENTIALS_PATH.exists():
         raise HTTPException(status_code=404, detail="credentials.json not found on server")
-
     try:
-        flow = _new_flow()
+        flow = _new_flow(scopes)
         authorization_url, state = flow.authorization_url(
             access_type='offline',
-            # No include_granted_scopes: it makes Google add scopes the account granted earlier (openid, email,
-            # profile), and the token exchange then fails with "Scope has changed". Every scope we need is requested here.
+            # No include_granted_scopes: it makes Google add scopes the account granted earlier, and the token
+            # exchange then fails with "Scope has changed". Every scope we need is requested here.
             prompt='consent'
         )
     except Exception:
@@ -66,15 +74,76 @@ async def google_login(origin: str = None, current_user: dict = Depends(get_curr
     _cleanup_pending_logins()
     _pending_logins[state] = {
         "flow": flow,
-        "user_email": current_user["email"],
+        "purpose": purpose,
+        "user_email": user_email,
         "origin": origin if origin in get_settings().CORS_ORIGINS else None,
         "expires": time.time() + LOGIN_TTL_SECONDS,
     }
-    return JSONResponse(content={"auth_url": authorization_url})
+    return authorization_url
+
+
+@auth_router.get("/google/signin")
+async def google_signin(request: Request, origin: str = None):
+    """Start "Continue with Google" for a visitor who is not signed in (public).
+
+    Returns the consent URL. The callback signs the person in, creating the account the first time."""
+    limits = await RateLimitModel.create_instance(services_of(request).mongo_db)
+    key = f"google_signin:{request.client.host if request.client else 'unknown'}"
+    if await limits.hit(key, window_seconds=60) > GOOGLE_SIGNIN_MAX_PER_MINUTE:
+        raise HTTPException(status_code=429, detail="Too many attempts. Please wait a minute and try again.")
+    return JSONResponse(content={"auth_url": _start_flow("signin", SIGN_IN_SCOPES, origin)})
+
+
+def _back_to_login(pending: dict, reason: str) -> RedirectResponse:
+    """Send the browser back to the sign-in page with a reason it can explain (never a raw error page)."""
+    frontend = (pending or {}).get("origin") or get_settings().FRONTEND_URL
+    return RedirectResponse(url=f"{frontend}/auth?google_error={reason}")
+
+
+async def _sign_in_with_google(request: Request, pending: dict, flow, token_dict: dict) -> RedirectResponse:
+    """Finish "Continue with Google": find or create the account for the verified Google identity and start a session."""
+    from google.auth.transport.requests import Request as GoogleRequest
+    from google.oauth2 import id_token as google_id_token
+
+    try:
+        claims = google_id_token.verify_oauth2_token(
+            flow.credentials.id_token, GoogleRequest(), flow.client_config["client_id"])
+    except Exception:
+        logger.error("Could not verify the Google identity token", exc_info=True)
+        return _back_to_login(pending, "failed")
+
+    email, subject = (claims.get("email") or "").strip().lower(), claims.get("sub")
+    if not email or not subject or not claims.get("email_verified"):
+        return _back_to_login(pending, "unverified")
+
+    db = services_of(request).mongo_db
+    users = await UserModel.create_instance(db)
+    user = await users.get_user_by_email(email)
+    if user is None:
+        name = (claims.get("name") or email.split("@")[0]).strip()[:80] or "User"
+        try:
+            user = await users.create_google_user(name, email, subject)
+        except EmailAlreadyRegistered:  # two sign-ins racing: the other one created it
+            user = await users.get_user_by_email(email)
+        logger.info(f"Created an account through Google sign-in for {mask_email(email)}")
+    elif user.get("google_sub") != subject:
+        # An account with this address already exists and was not made with Google. Signing in here would let whoever
+        # registered the address first (with a password) share the account, so the owner signs in with the password
+        # and connects Google from Settings instead.
+        logger.warning(f"Google sign-in refused for {mask_email(email)}: the address has a password account")
+        return _back_to_login(pending, "exists")
+
+    if not await users.update_google_token(email, token_dict):
+        logger.error(f"Failed to save Google token for {mask_email(email)}")
+        return _back_to_login(pending, "failed")
+
+    response = RedirectResponse(url=f"{pending.get('origin') or get_settings().FRONTEND_URL}/workspace")
+    await start_session(response, db, str(user["_id"]), email)
+    return response
 
 
 @auth_router.get("/google/callback")
-async def google_callback(request: Request, code: str, state: str):
+async def google_callback(request: Request, state: str, code: str = None, error: str = None):
     # `state` must match a login we started and that has not expired; otherwise the
     # request is forged or stale and no token is stored anywhere.
     _cleanup_pending_logins()
@@ -82,14 +151,25 @@ async def google_callback(request: Request, code: str, state: str):
     if pending is None:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state. Please try connecting again.")
 
+    if error or not code:  # the person pressed Cancel on Google's page
+        if pending["purpose"] == "signin":
+            return _back_to_login(pending, "denied")
+        return RedirectResponse(url=f"{pending['origin'] or get_settings().FRONTEND_URL}/workspace")
+
     try:
         flow = pending["flow"]
         flow.fetch_token(code=code)
         token_dict = json.loads(flow.credentials.to_json())
         token_dict["granted_scopes"] = sorted(flow.credentials.scopes or [])  # what the user actually allowed
+        token_dict.pop("id_token", None)
     except Exception:
         logger.error("Error exchanging Google OAuth code", exc_info=True)
+        if pending["purpose"] == "signin":
+            return _back_to_login(pending, "failed")
         raise HTTPException(status_code=400, detail="Failed to complete Google authentication")
+
+    if pending["purpose"] == "signin":
+        return await _sign_in_with_google(request, pending, flow, token_dict)
 
     user_model = await UserModel.create_instance(services_of(request).mongo_db)
     saved = await user_model.update_google_token(pending["user_email"], token_dict)

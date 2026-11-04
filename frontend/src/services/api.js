@@ -307,6 +307,12 @@ export async function fetchDailySummary(projectId = 'default', signal) {
   });
 }
 
+/** "Continue with Google" for someone who is not signed in: the consent URL that signs them in (or creates the account). */
+export async function getGoogleSignInUrl() {
+  const currentOrigin = encodeURIComponent(window.location.origin);
+  return request(`/api/v1/auth/google/signin?origin=${currentOrigin}`, { method: 'GET', retries: 0 });
+}
+
 export async function getGoogleAuthUrl() {
   const currentOrigin = encodeURIComponent(window.location.origin);
   return request(`/api/v1/auth/google/login?origin=${currentOrigin}`, { method: 'GET' });

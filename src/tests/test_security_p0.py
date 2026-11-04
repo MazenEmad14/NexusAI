@@ -64,7 +64,7 @@ def test_protected_routes_reject_anonymous_requests():
     import main
     from fastapi.testclient import TestClient
 
-    public = {"/api/v1", "/api/v1/", "/api/v1/auth/google/callback", "/api/v1/agent/notifications"}
+    public = {"/api/v1", "/api/v1/", "/api/v1/auth/google/callback", "/api/v1/auth/google/signin", "/api/v1/agent/notifications"}
     client = TestClient(main.app)
     checked = 0
     for route in main.app.routes:

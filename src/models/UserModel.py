@@ -55,6 +55,11 @@ class UserModel(BaseDataModel):
         except InvalidId:
             return None
 
+    async def create_google_user(self, name: str, email: str, google_sub: str) -> dict:
+        """A new account created by Google sign-in: no password, identified by Google's account id."""
+        await self.create_user(User(name=name, email=email, google_sub=google_sub, is_google_connected=True))
+        return await self.get_user_by_email(email)
+
     async def update_google_auth_status(self, email: str, status: bool) -> bool:
         result = await self.collection.update_one(
             {"email": _normalize(email)},

@@ -69,7 +69,7 @@ async def _guard_signup(limits: RateLimitModel, request: Request) -> None:
         raise _too_many(ends, "sign-up")
 
 
-async def _start_session(response: Response, db, user_id: str, email: str) -> tuple[str, str]:
+async def start_session(response: Response, db, user_id: str, email: str) -> tuple[str, str]:
     """Issue the session cookies for a user who has just proved who they are; returns (access token, csrf token)."""
     settings = get_settings()
     refresh = await (await SessionModel.create_instance(db)).start(user_id, settings.REFRESH_TOKEN_DAYS)
@@ -110,7 +110,7 @@ async def signup(request: Request, response: Response, body: SignUpRequest):
     await user_model.create_user(new_user)
 
     created = await user_model.get_user_by_email(email)
-    token, csrf = await _start_session(response, services_of(request).mongo_db, str(created["_id"]), email)
+    token, csrf = await start_session(response, services_of(request).mongo_db, str(created["_id"]), email)
 
     return {
         "access_token": token,  # for API clients; browsers use the httpOnly cookies set above
@@ -166,7 +166,7 @@ async def signin(request: Request, response: Response, body: SignInRequest):
         except PyMongoError:
             logger.warning("Could not sync the Google connection flag at sign-in", exc_info=True)  # cosmetic
 
-    token, csrf = await _start_session(response, services_of(request).mongo_db, str(user_data["_id"]), email)
+    token, csrf = await start_session(response, services_of(request).mongo_db, str(user_data["_id"]), email)
 
     return {
         "access_token": token,  # for API clients; browsers use the httpOnly cookies set above
