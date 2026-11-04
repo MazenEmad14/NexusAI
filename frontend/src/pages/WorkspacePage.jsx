@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
+import SettingsModal from '../components/SettingsModal';
 
 // API
 import {
@@ -177,6 +178,7 @@ export default function WorkspacePage() {
   const audioChunksRef = useRef([]);
 
   const [googleConnected, setGoogleConnected] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Which Google services the user allowed (Gmail, Calendar, Drive); an older connection has no Drive access.
   const [googleServices, setGoogleServices] = useState({ gmail: false, calendar: false, drive: false });
 
@@ -188,6 +190,16 @@ export default function WorkspacePage() {
   ];
 
   /* ── health check on mount ── */
+  const refreshGoogleStatus = useCallback(async () => {
+    try {
+      const gAuth = await checkGoogleAuthStatus();
+      setGoogleConnected(gAuth?.authenticated || false);
+      setGoogleServices(gAuth?.services || { gmail: !!gAuth?.authenticated, calendar: !!gAuth?.authenticated, drive: false });
+    } catch {
+      /* the next check tries again */
+    }
+  }, []);
+
   useEffect(() => {
     const check = async () => {
       const isOnline = await healthCheck();
@@ -195,17 +207,13 @@ export default function WorkspacePage() {
       if (isOnline) {
         const health = await servicesHealthCheck();
         setServicesHealth(health);
-        try {
-          const gAuth = await checkGoogleAuthStatus();
-          setGoogleConnected(gAuth?.authenticated || false);
-          setGoogleServices(gAuth?.services || { gmail: !!gAuth?.authenticated, calendar: !!gAuth?.authenticated, drive: false });
-        } catch (err) {}
+        await refreshGoogleStatus();
       }
     };
     check();
     const interval = setInterval(check, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshGoogleStatus]);
 
   /* auto-scroll */
   useEffect(() => {
@@ -651,6 +659,15 @@ export default function WorkspacePage() {
     <div className="flex h-screen w-full bg-[#0a0a0a] text-white overflow-hidden">
       {/* Toast notifications */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        googleConnected={googleConnected}
+        googleServices={googleServices}
+        onGoogleChanged={refreshGoogleStatus}
+        showSuccess={showSuccess}
+        showError={showError}
+      />
 
       {/* Hidden file input */}
       <input
@@ -835,6 +852,9 @@ export default function WorkspacePage() {
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Open settings"
+              title="Settings"
               className="p-2 rounded-lg hover:bg-white/5 text-white/40 hover:text-white/70 transition-colors cursor-pointer bg-transparent border-none"
             >
               <Settings className="w-4.5 h-4.5" />

@@ -252,6 +252,8 @@ Known remaining issue related to 2.2: checkpoints store the full graph state, wh
 
 **A scope bug found on the way (fixed).** Gmail and Calendar each rebuilt the credentials with their own scope list, so a refresh by one returned an access token limited to that service and the next call to the other failed with "insufficient authentication scopes" (the cause of the proactive-check 403s in the logs). Credentials are now built without a scope list (`helpers/google_auth.py`), so a refresh keeps everything the user granted, and the granted scopes are recorded separately at connect time.
 
+**Settings and homepage (after the end-to-end run).** The workspace's Settings button had no click handler at all. It now opens a dialog (`components/SettingsModal.jsx`): account name and email, a time zone picker (saved through the existing endpoint), Google status per service (Gmail, Calendar, Drive) with Connect, Reconnect and Disconnect, a two-step "clear conversation list", and **Sign out**, which was the missing sign-out button. The landing page lost its "Pricing" link (there was no pricing section) and was rewritten around what the product really does: a live demo that types an example request and shows which agent handles it and what it does (calendar, Drive, knowledge base, data, an Arabic reminder), eight capability cards, a "How it works" section, a "Trust" section (approval before acting, per-user data, untrusted content, Arabic and English) and a closing call to action.
+
 ---
 
 ## 5. Suggested execution plan

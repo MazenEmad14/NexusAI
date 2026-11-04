@@ -327,6 +327,17 @@ export async function openNotificationStream() {
   return new EventSource(`${API_BASE}/api/v1/agent/notifications?ticket=${encodeURIComponent(ticket)}`);
 }
 
+/** Save the time zone the user picked in Settings. */
+export async function updateTimezone(zone) {
+  await request('/api/v1/auth/local/timezone', { method: 'PUT', body: JSON.stringify({ timezone: zone }), retries: 0 });
+  try { localStorage.setItem('tz_synced', zone); } catch { /* ignore */ }
+}
+
+/** Forget the user's Google connection (Gmail, Calendar and Drive). */
+export async function disconnectGoogle() {
+  return request('/api/v1/auth/google/disconnect', { method: 'POST', retries: 0 });
+}
+
 /**
  * Tell the server which time zone the user is in, so "today", "tomorrow" and the 8am briefing
  * are theirs. Sent only when it changed since the last time on this browser.
