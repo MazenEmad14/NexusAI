@@ -60,7 +60,8 @@ async def google_login(origin: str = None, current_user: dict = Depends(get_curr
         flow = _new_flow()
         authorization_url, state = flow.authorization_url(
             access_type='offline',
-            include_granted_scopes='true',
+            # No include_granted_scopes: it makes Google add scopes the account granted earlier (openid, email,
+            # profile), and the token exchange then fails with "Scope has changed". Every scope we need is requested here.
             prompt='consent'
         )
     except Exception:
