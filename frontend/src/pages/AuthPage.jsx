@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { Mail, Lock, User, ArrowLeft, Eye, EyeOff } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getGoogleAuthUrl, getGoogleSignInUrl } from "../services/api";
+import { getGoogleSignInUrl } from "../services/api";
 import { useAuth } from "../hooks/useAuth";
 
 const GoogleIcon = () => (
@@ -124,16 +124,8 @@ export default function AuthPage() {
     setLoading(true);
     try {
       const res = await signIn(signInData.email, signInData.password);
-      if (res && res.user) {
-        if (!res.user.is_google_connected) {
-           const googleRes = await getGoogleAuthUrl();
-           if (googleRes && googleRes.auth_url) {
-             window.location.href = googleRes.auth_url;
-             return;
-           }
-        }
-        navigate("/workspace");
-      }
+      // Straight to the workspace: Google can be connected later from the sidebar or Settings.
+      if (res && res.user) navigate("/workspace");
     } catch (err) {
       setError(err?.message || "Sign in failed");
     } finally {
@@ -151,14 +143,8 @@ export default function AuthPage() {
     setLoading(true);
     try {
       const res = await signUp(signUpData.name, signUpData.email, signUpData.password);
-      if (res && res.user) {
-        const googleRes = await getGoogleAuthUrl();
-        if (googleRes && googleRes.auth_url) {
-          window.location.href = googleRes.auth_url;
-          return;
-        }
-        navigate("/workspace");
-      }
+      // Straight to the workspace: Google can be connected later from the sidebar or Settings.
+      if (res && res.user) navigate("/workspace");
     } catch (err) {
       setError(err?.message || "Sign up failed");
     } finally {
