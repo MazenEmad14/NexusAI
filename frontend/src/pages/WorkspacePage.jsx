@@ -162,8 +162,9 @@ export default function WorkspacePage() {
   // Opening a conversation that is not in memory (after a reload, or one from an earlier visit) loads what was
   // said from the server, instead of showing an empty chat.
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const restoredSessions = useRef(new Set());
   useEffect(() => {
-    if (!activeSessionId || messageStore[activeSessionId] !== undefined) return undefined;
+    if (!activeSessionId || restoredSessions.current.has(activeSessionId)) return undefined;
     const sessionId = activeSessionId;
     const controller = new AbortController();
     setLoadingMessages(true);
@@ -172,15 +173,19 @@ export default function WorkspacePage() {
         const restored = history
           .filter((turn) => turn && (turn.role === 'user' || turn.role === 'assistant') && turn.content)
           .map((turn, index) => ({ id: `restored_${sessionId}_${index}`, role: turn.role, content: turn.content }));
+        restoredSessions.current.add(sessionId);
         // Keep anything the person typed while this was loading.
         setMessageStore((prev) => (prev[sessionId] === undefined ? { ...prev, [sessionId]: restored } : prev));
+        setLoadingMessages(false);
       })
-      .catch(() => {
+      .catch((err) => {
+        if (err?.name === 'AbortError') return; // the effect ran again (another conversation, or a re-render): it loads it
+        restoredSessions.current.add(sessionId);
         setMessageStore((prev) => (prev[sessionId] === undefined ? { ...prev, [sessionId]: [] } : prev));
-      })
-      .finally(() => setLoadingMessages(false));
+        setLoadingMessages(false);
+      });
     return () => controller.abort();
-  }, [activeSessionId, threadId, messageStore]);
+  }, [activeSessionId, threadId]);
 
   const [inputValue, setInputValue] = useState('');
   const [agentState, setAgentState] = useState(null);
