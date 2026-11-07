@@ -258,6 +258,8 @@ Known remaining issue related to 2.2: checkpoints store the full graph state, wh
 
 **Conversations shared between users, and empty chats.** The conversation list was kept in `localStorage` under one key for the whole browser, so the next person to sign in saw the previous person's chat titles (the messages themselves are stored per user on the server, so opening such a chat showed nothing). The list is now stored per signed-in person (`nexusai_sessions:<email>`), and the shared keys an older version left behind are deleted on first load. Opening a conversation that is not in memory (after a reload, or one from an earlier visit) now loads its messages from the server (`GET /memory/{thread}`) instead of showing an empty chat, with a "Loading conversation" state. Before this, even your own old chats were empty after a reload, because only the titles were saved. Three frontend tests cover the per-person keys.
 
+**Password sign-in no longer detours through Google.** After signing in or up with an email and password the app used to send anyone without a Google connection straight to Google's consent page, on every sign-in. It now goes to the workspace; Google is connected from the sidebar button or Settings when the person wants Gmail, Calendar or Drive.
+
 ---
 
 ## 5. Suggested execution plan
