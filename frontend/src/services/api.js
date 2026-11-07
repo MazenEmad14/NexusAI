@@ -260,6 +260,17 @@ export async function getIndexInfo(projectId) {
 /* ──────────────────── Dashboard Endpoints ──────────────────── */
 
 /**
+ * The saved messages of one of the user's conversations, as [{ role, content }] (empty for a new one).
+ * @param {string} threadId
+ * @param {AbortSignal} [signal]
+ */
+export async function fetchThreadMessages(threadId, signal) {
+  const body = await request(`/api/v1/memory/${encodeURIComponent(threadId)}`, { method: 'GET', signal });
+  const history = body?.data?.chat_history ?? body?.chat_history ?? [];
+  return Array.isArray(history) ? history : [];
+}
+
+/**
  * Fetch pending tasks from MongoDB.
  * @param {string} projectId
  * @param {AbortSignal} [signal]

@@ -44,6 +44,7 @@ import {
   servicesHealthCheck,
   fetchReminders,
   fetchCalendarEvents,
+  fetchThreadMessages,
   fetchTasks,
   fetchDailySummary,
   getGoogleAuthUrl,
@@ -56,6 +57,7 @@ import {
 
 // Hooks
 import { useThread } from '../hooks/useThread';
+import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
 
 // Components
@@ -129,6 +131,8 @@ function getAgentBadges(type, source) {
 /* ───────────────────────── component ──────────────────────── */
 
 export default function WorkspacePage() {
+  const { user } = useAuth();
+
   /* ── thread persistence ── */
   const {
     sessions,
@@ -138,7 +142,7 @@ export default function WorkspacePage() {
     createNewSession,
     updateSessionTitle,
     switchSession,
-  } = useThread();
+  } = useThread(user?.email);
 
   /* ── toast notifications ── */
   const { toasts, showSuccess, showError, showInfo, dismissToast } = useToast();
@@ -154,6 +158,29 @@ export default function WorkspacePage() {
       return { ...prev, [activeSessionId]: next };
     });
   }, [activeSessionId]);
+
+  // Opening a conversation that is not in memory (after a reload, or one from an earlier visit) loads what was
+  // said from the server, instead of showing an empty chat.
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  useEffect(() => {
+    if (!activeSessionId || messageStore[activeSessionId] !== undefined) return undefined;
+    const sessionId = activeSessionId;
+    const controller = new AbortController();
+    setLoadingMessages(true);
+    fetchThreadMessages(threadId, controller.signal)
+      .then((history) => {
+        const restored = history
+          .filter((turn) => turn && (turn.role === 'user' || turn.role === 'assistant') && turn.content)
+          .map((turn, index) => ({ id: `restored_${sessionId}_${index}`, role: turn.role, content: turn.content }));
+        // Keep anything the person typed while this was loading.
+        setMessageStore((prev) => (prev[sessionId] === undefined ? { ...prev, [sessionId]: restored } : prev));
+      })
+      .catch(() => {
+        setMessageStore((prev) => (prev[sessionId] === undefined ? { ...prev, [sessionId]: [] } : prev));
+      })
+      .finally(() => setLoadingMessages(false));
+    return () => controller.abort();
+  }, [activeSessionId, threadId, messageStore]);
 
   const [inputValue, setInputValue] = useState('');
   const [agentState, setAgentState] = useState(null);
@@ -884,7 +911,13 @@ export default function WorkspacePage() {
             <div className="flex-1 overflow-y-auto px-6 py-6 scroll-smooth">
               <div className="max-w-3xl mx-auto space-y-6">
                 {/* Welcome message when empty */}
-                {messages.length === 0 && (
+                {loadingMessages && messages.length === 0 && (
+                  <div className="flex items-center justify-center gap-2 py-24 text-sm text-white/40">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading conversation…
+                  </div>
+                )}
+                {!loadingMessages && messages.length === 0 && (
                   <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
